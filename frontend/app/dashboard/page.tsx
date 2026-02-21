@@ -10,6 +10,7 @@ import type {
 } from "@/lib/api-types";
 import { getInterventionStats, listInterventions, toErrorMessage } from "@/lib/frontend-api";
 import Image from "next/image";
+import { getUserDisplayName, useDashboardUser } from "./user-context";
 
 type StatCardProps = {
   label: string;
@@ -73,6 +74,7 @@ function StatCard({ label, value, note }: StatCardProps) {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { user, isLoadingUser } = useDashboardUser();
   const [interventions, setInterventions] = useState<InterventionResponse[]>([]);
   const [stats, setStats] = useState<InterventionStatsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -172,11 +174,13 @@ export default function DashboardPage() {
     setSelectedEventId((currentId) => (currentId === eventId ? null : eventId));
   };
 
+  const welcomeTitle = isLoadingUser ? "Welcome back!" : `Welcome back, ${getUserDisplayName(user)}!`;
+
   return (
     <main className="mx-auto w-full max-w-[1200px] py-20">
       <section className={`grid gap-4 ${selectedEvent ? "md:grid-cols-3" : "grid-cols-1"}`}>
         <div className={`space-y-8 ${selectedEvent ? "md:col-span-2" : ""}`}>
-          <div className="font-spectral text-4xl -tracking-[0.2rem] mb-12">Welcome back!</div>
+          <div className="font-spectral text-4xl -tracking-[0.2rem] mb-12">{welcomeTitle}</div>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {statCards.map((card) => (
               <StatCard key={card.label} label={card.label} value={card.value} note={card.note} />

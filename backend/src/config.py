@@ -30,8 +30,8 @@ COST_PER_MILLION_TOKENS: float = float(os.getenv("COST_PER_MILLION_TOKENS", "0.1
 # Estimated tokens consumed per run (rough average across all nodes)
 ESTIMATED_TOKENS_PER_RUN: int = int(os.getenv("ESTIMATED_TOKENS_PER_RUN", "1500"))
 
-# Platform fee charged when an intervention saves the user money
-PLATFORM_FEE: float = float(os.getenv("PLATFORM_FEE", "2.00"))
+# Platform fee = compute cost × this multiplier
+PLATFORM_FEE_MULTIPLIER: float = float(os.getenv("PLATFORM_FEE_MULTIPLIER", "10"))
 
 # ─────────────────────────────────────────────
 # Supabase Auth

@@ -13,6 +13,7 @@ import os
 import uuid as _uuid
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any, Generator, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
@@ -191,6 +192,7 @@ class Interaction(SQLModel, table=True):
         )
     )
     domain: str = Field(sa_column=Column(Text, nullable=False))
+    title: Optional[str] = None
     intent_type: Optional[str] = None
     intent_data: dict[str, Any] = Field(
         default_factory=dict,
@@ -228,6 +230,51 @@ def _safe_float(val: Any) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def _parse_date(val: str | None) -> date | None:
+    """Parse a date string in ISO format or common human-readable formats.
+
+    Handles: '2026-03-14', 'Sat, 14 Mar 2026', '14 Mar 2026', 'March 14, 2026', etc.
+    """
+    if not val:
+        return None
+    s = val.strip()
+
+    # ISO format (2026-03-14)
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        pass
+
+    # RFC 2822 style ("Sat, 14 Mar 2026") — parsedate_to_datetime needs a time,
+    # so append one if missing
+    try:
+        return parsedate_to_datetime(s + " 00:00:00").date()
+    except Exception:
+        pass
+
+    # Common formats
+    for fmt in (
+        "%d %b %Y",
+        "%d %B %Y",
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+
+    # Last resort: strip leading day name ("Sat, " / "Saturday, ") and retry
+    if "," in s:
+        after_comma = s.split(",", 1)[1].strip()
+        return _parse_date(after_comma)
+
+    logger.warning("_parse_date could not parse: %r", val)
+    return None
 
 
 def _parse_time(val: str | None) -> time | None:
@@ -325,11 +372,18 @@ def store_flight_booking(
                 if not dep_date_str:
                     continue
 
+                parsed_date = _parse_date(dep_date_str)
+                if not parsed_date:
+                    logger.warning(
+                        "Skipping leg %s — unparseable date: %r", leg_name, dep_date_str
+                    )
+                    continue
+
                 booking = FlightBooking(
                     user_id=uid,
                     airline=leg.get("airline"),
                     flight_number=leg.get("flight_number"),
-                    departure_date=date.fromisoformat(dep_date_str),
+                    departure_date=parsed_date,
                     departure_time=_parse_time(leg.get("departure_time")),
                     departure_airport=leg.get("departure_airport"),
                     arrival_time=_parse_time(leg.get("arrival_time")),
@@ -541,6 +595,7 @@ def store_interaction(
     risk_factors: list[str],
     intervention_message: str | None,
     economics: dict[str, Any],
+    title: str | None = None,
 ) -> dict[str, Any] | None:
     """Log one analysis run into the interactions table."""
     uid = _to_uuid(user_id)
@@ -549,6 +604,7 @@ def store_interaction(
             row = Interaction(
                 user_id=uid,
                 domain=domain,
+                title=title,
                 intent_type=intent.get("type"),
                 intent_data=intent,
                 risk_factors=risk_factors,
@@ -580,6 +636,7 @@ def _interaction_to_dict(row: Interaction) -> dict[str, Any]:
     return {
         "id": str(row.id),
         "domain": row.domain,
+        "title": row.title,
         "intent_type": row.intent_type,
         "intent_data": row.intent_data or {},
         "risk_factors": row.risk_factors or [],

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -21,7 +22,7 @@ from src import db
 from src.config import (
     COST_PER_MILLION_TOKENS,
     ESTIMATED_TOKENS_PER_RUN,
-    PLATFORM_FEE,
+    PLATFORM_FEE_MULTIPLIER,
     llm,
 )
 from src.domains import get_domain_handler
@@ -69,6 +70,41 @@ def _inject_user_id(state: AgentState) -> dict[str, Any]:
     intent = dict(state["intent"])
     intent["_user_id"] = state.get("user_id", "")
     return intent
+
+
+def _strip_html(val: str) -> str:
+    """Remove HTML tags and collapse whitespace."""
+    clean = re.sub(r"<[^>]+>", " ", val)
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def _generate_title(domain: str, intent: dict[str, Any]) -> str:
+    """Build a short human-readable title from domain + intent data."""
+    intent_type = intent.get("type", "")
+
+    # Flights
+    if intent_type == "flight_booking":
+        outbound = intent.get("outbound", {})
+        dep = _strip_html(str(outbound.get("departure_airport", "")))
+        arr = _strip_html(str(outbound.get("arrival_airport", "")))
+        dep_date = _strip_html(str(outbound.get("departure_date", "")))
+        route = f"{dep} → {arr}" if dep and arr else "flight"
+        return f"Flight {route} on {dep_date}" if dep_date else f"Flight {route}"
+
+    # Shopping
+    if intent_type == "purchase":
+        items = intent.get("items", [])
+        if items:
+            first = items[0].get("name", "Unknown item")
+            if len(items) > 1:
+                return f"{first} + {len(items) - 1} more"
+            return first
+        return "Purchase"
+
+    # Fallback
+    if intent_type:
+        return f"{intent_type} on {domain}"
+    return f"Action on {domain}"
 
 
 # ─────────────────────────────────────────────
@@ -185,10 +221,12 @@ def economics_node(state: AgentState) -> dict:
         hour,
     )
 
+    platform_fee = round(compute_cost * PLATFORM_FEE_MULTIPLIER, 6)
+
     return {
         "compute_cost": round(compute_cost, 6),
         "money_saved": item_price if is_intervening else 0.0,
-        "platform_fee": PLATFORM_FEE if is_intervening else 0.0,
+        "platform_fee": platform_fee if is_intervening else 0.0,
         "hour_of_day": hour,
     }
 
@@ -231,6 +269,7 @@ async def storage_node(state: AgentState) -> dict:
                 risk_factors=state.get("risk_factors", []),
                 intervention_message=state.get("intervention_message"),
                 economics=economics,
+                title=_generate_title(domain, intent),
             )
         except Exception:
             logger.exception("storage | interaction store failed user=%s", user_id)

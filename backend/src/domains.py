@@ -53,6 +53,9 @@ def _parse_ical_feed(content: bytes, start: date, end: date) -> list[dict]:
         dtstart = component.get("dtstart")
         dtend = component.get("dtend")
         summary = str(component.get("summary", ""))
+        location = (
+            str(component.get("location", "")) if component.get("location") else ""
+        )
 
         if not dtstart:
             continue
@@ -66,6 +69,7 @@ def _parse_ical_feed(content: bytes, start: date, end: date) -> list[dict]:
         events.append(
             {
                 "summary": summary,
+                "location": location,
                 "start": _fmt_ical_dt(dtstart),
                 "end": _fmt_ical_dt(dtend),
             }
@@ -310,7 +314,7 @@ class FlightDomainHandler(DomainHandler):
 **Flight the user wants to book RIGHT NOW:**
 {intent}
 
-**Their calendar events for ±3 days around each flight leg:**
+**Their calendar events for ±3 days around each flight leg (includes location where available):**
 {calendar_events}
 
 **Their existing flight bookings and travel history:**
@@ -321,6 +325,10 @@ Analyse the above data and look for ALL of the following risk categories:
 1. **Schedule conflict** – A calendar event that overlaps with, or falls
    dangerously close to, a flight departure or arrival window (including
    time to get to/from the airport — assume ~2 hours each way).
+   Pay special attention to event **locations**: if an event has a
+   physical location that requires the user to be in a specific city
+   or country, and the flight means they would be elsewhere at that
+   time, flag this as a clear conflict.
 
 2. **Double booking** – The user already has a flight booked to the same
    destination around the same dates, or overlapping travel dates.
@@ -348,8 +356,15 @@ Analyse the above data and look for ALL of the following risk categories:
    especially overwhelming for neurodivergent travellers.  Always
    flag this clearly.
 
-Return ONLY raw JSON: {{"risks": ["risk description 1", "risk description 2"]}}
-If there are absolutely NO risks, return: {{"risks": []}}"""
+**Output format:**
+Return ONLY raw JSON: {{"risks": ["risk 1", "risk 2", "risk 3"]}}
+If there are absolutely NO risks, return: {{"risks": []}}
+
+CRITICAL RULES:
+- Each risk MUST be its own separate string in the array.
+- NEVER combine multiple risks into one string with "|", ";", or similar separators.
+- Each array element = exactly ONE risk.
+- Keep each risk description to 1-2 sentences maximum."""
 
     def build_drafting_prompt(
         self, risk_factors: list[str], intent: dict[str, Any]
@@ -600,8 +615,15 @@ Analyse the above data and look for ALL of the following risk patterns:
    version that still works (e.g. XM4 → XM5 headphones, iPhone 15 →
    iPhone 16). Flag this even if the older model is slightly different.
 
-Return ONLY raw JSON: {{"risks": ["risk description 1", "risk description 2"]}}
-If there are absolutely NO risks, return: {{"risks": []}}"""
+**Output format:**
+Return ONLY raw JSON: {{"risks": ["risk 1", "risk 2", "risk 3"]}}
+If there are absolutely NO risks, return: {{"risks": []}}
+
+CRITICAL RULES:
+- Each risk MUST be its own separate string in the array.
+- NEVER combine multiple risks into one string with "|", ";", or similar separators.
+- Each array element = exactly ONE risk.
+- Keep each risk description to 1-2 sentences maximum."""
 
     def build_drafting_prompt(
         self, risk_factors: list[str], intent: dict[str, Any]
@@ -609,17 +631,11 @@ If there are absolutely NO risks, return: {{"risks": []}}"""
         items = intent.get("items", [])
         item_name = items[0].get("name", "this item") if items else "this item"
 
-        return f"""Write a 1-2 sentence empathetic, non-judgmental warning for a neurodivergent user
-who is about to purchase "{item_name}" on Amazon.
-
-The detected risks are:
-{risk_factors}
-
-Be short and direct – never shame or lecture. Acknowledge the appeal of the
-purchase while gently flagging the concern. If the risk is about already owning
-something similar, mention it specifically. If it's about impulse buying,
-be understanding about how tempting online shopping can be.
-Start with an appropriate emoji. Keep it concise enough to fit in a browser popup."""
+        return f"""Write a warning for a user who is about to purchase "{item_name}". The users frequent errors are: "{risk_factors}". Make sure the wording is clear, any acronyms or technical details are made simple or removed, and the message is made specific to the frequent errors the user makes, highlighting the potential conflict/problem.
+        For example: Where a user makes frequent issues with double bookings, a short message stating the there has been an identical or similar existing booking should be made clear.
+        Do not include unnecessary information.
+        Where necessary, state to the user they make mistakes like this frequently.
+        Be short and direct, it should be concise enough to fit in a browser popup. Highlight the price. Add a relevant emoji to the start of the message. """
 
     # ── economics ────────────────────────────────────────────────────
 
@@ -699,8 +715,14 @@ class FallbackHandler(DomainHandler):
             f"**Their purchase history:**\n{purchase_history}\n\n"
             "Look for duplicate purchases, unusually high spending, or any "
             "clearly wasteful or conflicting action.\n\n"
-            'Return ONLY raw JSON: {"risks": ["risk 1", "risk 2"]}\n'
-            'If there are NO risks return: {"risks": []}'
+            "**Output format:**\n"
+            'Return ONLY raw JSON: {"risks": ["risk 1", "risk 2", "risk 3"]}\n'
+            'If there are NO risks return: {"risks": []}\n\n'
+            "CRITICAL RULES:\n"
+            "- Each risk MUST be its own separate string in the array.\n"
+            "- NEVER combine multiple risks into one string with '|', ';', or similar separators.\n"
+            "- Each array element = exactly ONE risk.\n"
+            "- Keep each risk description to 1-2 sentences maximum."
         )
 
     def build_drafting_prompt(

@@ -129,6 +129,7 @@ class InterventionOut(BaseModel):
 
     id: str
     domain: str
+    title: Optional[str] = None
     intent_type: Optional[str] = None
     intent_data: dict[str, Any] = Field(default_factory=dict)
     risk_factors: list[str] = Field(default_factory=list)

@@ -73,12 +73,18 @@ app = FastAPI(
     version="0.5.0",
 )
 
+# When origins is ["*"], disable credentials (Starlette silently drops the
+# Access-Control-Allow-Origin header for credentialed requests with "*").
+# For explicit origin lists, credentials are safe to enable.
+_allow_all = CORS_ORIGINS == ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=not _allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Build the agent graph once (in-memory checkpointer shared across requests)

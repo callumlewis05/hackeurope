@@ -16,6 +16,23 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Configuration
+
+Auth uses Supabase (`@supabase/ssr`) with App Router cookies. Create `frontend/.env.local` and set:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=your-project-url
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_xxx
+```
+
+Backend API requests are proxied through Next route handlers under `app/api`. Set:
+
+```bash
+BACKEND_API_BASE_URL=https://0db0ec8f5fb9.ngrok.app
+```
+
+If omitted, the same ngrok URL above is used as the default.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

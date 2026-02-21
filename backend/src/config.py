@@ -40,3 +40,10 @@ PLATFORM_FEE_MULTIPLIER: float = float(os.getenv("PLATFORM_FEE_MULTIPLIER", "10"
 SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
 SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
 SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+# ─────────────────────────────────────────────
+# Google OAuth (for Gmail integration)
+# ─────────────────────────────────────────────
+
+GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")

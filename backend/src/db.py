@@ -100,6 +100,29 @@ class Profile(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class EmailConnection(SQLModel, table=True):
+    """Stores Google OAuth tokens so we can read Gmail on behalf of the user."""
+
+    __tablename__ = "email_connections"  # type: ignore[assignment]
+    __table_args__ = (Index("ix_ec_user", "user_id", unique=True),)
+
+    id: _uuid.UUID = Field(default_factory=_uuid.uuid4, primary_key=True)
+    user_id: _uuid.UUID = Field(
+        sa_column=Column(
+            PG_UUID(as_uuid=True),
+            ForeignKey("profiles.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    provider: str = Field(default="google", sa_column=Column(Text, nullable=False))
+    email_address: Optional[str] = Field(default=None, sa_column=Column(Text))
+    access_token: str = Field(sa_column=Column(Text, nullable=False))
+    refresh_token: Optional[str] = Field(default=None, sa_column=Column(Text))
+    token_expires_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class UserCalendar(SQLModel, table=True):
     __tablename__ = "user_calendars"  # type: ignore[assignment]
     __table_args__ = (Index("ix_uc_user", "user_id"),)
@@ -887,4 +910,147 @@ def _calendar_to_dict(c: UserCalendar) -> dict[str, Any]:
         "name": c.name,
         "ical_url": c.ical_url,
         "created_at": str(c.created_at) if c.created_at else None,
+    }
+
+
+# ═════════════════════════════════════════════
+# Email Connection Repository
+# ═════════════════════════════════════════════
+
+
+def upsert_email_connection(
+    user_id: _uuid.UUID,
+    access_token: str,
+    refresh_token: str | None = None,
+    email_address: str | None = None,
+    provider: str = "google",
+    token_expires_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Create or update the Gmail/email connection for a user.
+
+    Only one connection per user is supported (unique on user_id).
+    """
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
+            existing = session.exec(stmt).first()
+
+            if existing:
+                existing.access_token = access_token
+                if refresh_token is not None:
+                    existing.refresh_token = refresh_token
+                if email_address is not None:
+                    existing.email_address = email_address
+                if token_expires_at is not None:
+                    existing.token_expires_at = token_expires_at
+                existing.updated_at = datetime.utcnow()
+                session.add(existing)
+                session.flush()
+                return _email_connection_to_dict(existing)
+            else:
+                conn = EmailConnection(
+                    user_id=uid,
+                    provider=provider,
+                    email_address=email_address,
+                    access_token=access_token,
+                    refresh_token=refresh_token,
+                    token_expires_at=token_expires_at,
+                )
+                session.add(conn)
+                session.flush()
+                return _email_connection_to_dict(conn)
+    except Exception:
+        logger.exception("upsert_email_connection failed user=%s", user_id)
+        return None
+
+
+def get_email_connection(user_id: _uuid.UUID) -> dict[str, Any] | None:
+    """Return the email connection for a user, or None."""
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
+            row = session.exec(stmt).first()
+            if not row:
+                return None
+            return _email_connection_to_dict(row)
+    except Exception:
+        logger.exception("get_email_connection failed user=%s", user_id)
+        return None
+
+
+def get_email_connection_raw(user_id: _uuid.UUID) -> dict[str, Any] | None:
+    """Return the email connection INCLUDING tokens (for internal use only)."""
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
+            row = session.exec(stmt).first()
+            if not row:
+                return None
+            return {
+                "id": str(row.id),
+                "user_id": str(row.user_id),
+                "provider": row.provider,
+                "email_address": row.email_address,
+                "access_token": row.access_token,
+                "refresh_token": row.refresh_token,
+                "token_expires_at": row.token_expires_at,
+            }
+    except Exception:
+        logger.exception("get_email_connection_raw failed user=%s", user_id)
+        return None
+
+
+def delete_email_connection(user_id: _uuid.UUID) -> bool:
+    """Remove the email connection for a user. Returns True if deleted."""
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
+            row = session.exec(stmt).first()
+            if not row:
+                return False
+            session.delete(row)
+            return True
+    except Exception:
+        logger.exception("delete_email_connection failed user=%s", user_id)
+        return False
+
+
+def update_email_token(
+    user_id: _uuid.UUID,
+    access_token: str,
+    token_expires_at: datetime | None = None,
+) -> bool:
+    """Update just the access token (after a refresh). Returns True on success."""
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
+            row = session.exec(stmt).first()
+            if not row:
+                return False
+            row.access_token = access_token
+            if token_expires_at is not None:
+                row.token_expires_at = token_expires_at
+            row.updated_at = datetime.utcnow()
+            session.add(row)
+            return True
+    except Exception:
+        logger.exception("update_email_token failed user=%s", user_id)
+        return False
+
+
+def _email_connection_to_dict(c: EmailConnection) -> dict[str, Any]:
+    return {
+        "id": str(c.id),
+        "user_id": str(c.user_id),
+        "provider": c.provider,
+        "email_address": c.email_address,
+        "has_refresh_token": c.refresh_token is not None,
+        "token_expires_at": str(c.token_expires_at) if c.token_expires_at else None,
+        "created_at": str(c.created_at) if c.created_at else None,
+        "updated_at": str(c.updated_at) if c.updated_at else None,
     }

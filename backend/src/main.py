@@ -16,6 +16,11 @@ Endpoints:
   GET  /api/interventions/stats      — aggregate intervention statistics
   GET  /api/interventions/{id}       — single intervention by ID
   POST /api/analyze                  — run the agent pipeline
+  POST /api/email/connect            — connect Gmail via Google OAuth token
+  GET  /api/email/status             — check email connection status
+  DELETE /api/email/disconnect       — disconnect Gmail
+  GET  /api/email/receipts           — fetch purchase receipts from Gmail
+  GET  /api/email/flights            — fetch flight bookings from Gmail
 """
 
 import logging
@@ -30,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from langchain_core.runnables import RunnableConfig
 
-from src import db
+from src import db, gmail
 from src.config import (
     CORS_ORIGINS,
     SUPABASE_ANON_KEY,
@@ -45,6 +50,9 @@ from src.schemas import (
     CalendarCreate,
     CalendarOut,
     EconomicsDetail,
+    EmailConnectRequest,
+    EmailReceiptsOut,
+    EmailStatusOut,
     IntentRequest,
     InterventionListResponse,
     InterventionOut,
@@ -525,6 +533,105 @@ async def get_intervention(intervention_id: _uuid.UUID, user: CurrentUser):
     if not record:
         raise HTTPException(status_code=404, detail="Intervention not found.")
     return record
+
+
+# ─────────────────────────────────────────────
+# Routes — Email (Gmail) Integration
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/email/connect", response_model=EmailStatusOut, status_code=201)
+async def connect_email(body: EmailConnectRequest, user: CurrentUser):
+    """Connect a Gmail account by storing the Google OAuth tokens.
+
+    The frontend should obtain a Google OAuth access token (and ideally a
+    refresh token) via Supabase Auth or a direct OAuth flow, then POST
+    them here.
+    """
+    user_id = user["id"]
+
+    # Resolve the email address from the token
+    email_address = await gmail.resolve_email_address(body.provider_token)
+
+    conn = db.upsert_email_connection(
+        user_id=user_id,
+        access_token=body.provider_token,
+        refresh_token=body.provider_refresh_token,
+        email_address=email_address,
+    )
+    if not conn:
+        raise HTTPException(status_code=500, detail="Failed to save email connection.")
+
+    logger.info(
+        "Email connected | user=%s | email=%s", user_id, email_address or "unknown"
+    )
+    return EmailStatusOut(
+        connected=True,
+        provider=conn.get("provider", "google"),
+        email_address=conn.get("email_address"),
+        has_refresh_token=conn.get("has_refresh_token", False),
+        connected_at=conn.get("created_at"),
+    )
+
+
+@app.get("/api/email/status", response_model=EmailStatusOut)
+async def email_status(user: CurrentUser):
+    """Check whether the authenticated user has a Gmail connection."""
+    conn = db.get_email_connection(user["id"])
+    if not conn:
+        return EmailStatusOut(connected=False)
+    return EmailStatusOut(
+        connected=True,
+        provider=conn.get("provider", "google"),
+        email_address=conn.get("email_address"),
+        has_refresh_token=conn.get("has_refresh_token", False),
+        connected_at=conn.get("created_at"),
+    )
+
+
+@app.delete("/api/email/disconnect", status_code=204)
+async def disconnect_email(user: CurrentUser):
+    """Remove the Gmail connection for the authenticated user."""
+    ok = db.delete_email_connection(user["id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="No email connection found.")
+    logger.info("Email disconnected | user=%s", user["id"])
+
+
+@app.get("/api/email/receipts", response_model=EmailReceiptsOut)
+async def email_receipts(user: CurrentUser, lookback_days: int = 90):
+    """Fetch purchase receipts from the user's connected Gmail.
+
+    Uses LLM-based extraction to parse email subjects/snippets into
+    structured receipt data (merchant, item, amount, currency, date).
+    """
+    user_id = str(user["id"])
+    conn = db.get_email_connection(user["id"])
+    if not conn:
+        raise HTTPException(
+            status_code=404, detail="No email connection. Connect Gmail first."
+        )
+
+    items = await gmail.fetch_email_receipts(user_id, lookback_days=lookback_days)
+    return EmailReceiptsOut(items=items, count=len(items), source="gmail")
+
+
+@app.get("/api/email/flights", response_model=EmailReceiptsOut)
+async def email_flights(user: CurrentUser, lookback_days: int = 180):
+    """Fetch flight booking confirmations from the user's connected Gmail.
+
+    Uses LLM-based extraction to parse email subjects/snippets into
+    structured flight data (airline, flight_number, airports, dates, price).
+    """
+    user_id = str(user["id"])
+    conn = db.get_email_connection(user["id"])
+    if not conn:
+        raise HTTPException(
+            status_code=404, detail="No email connection. Connect Gmail first."
+        )
+
+    items = await gmail.fetch_email_flights(user_id, lookback_days=lookback_days)
+    return EmailReceiptsOut(items=items, count=len(items), source="gmail")
 
 
 # ─────────────────────────────────────────────

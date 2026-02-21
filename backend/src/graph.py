@@ -18,7 +18,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from src import db
+from src import db, gmail
 from src.config import (
     COST_PER_MILLION_TOKENS,
     ESTIMATED_TOKENS_PER_RUN,
@@ -133,6 +133,18 @@ async def context_router_node(state: AgentState) -> dict:
 # ─────────────────────────────────────────────
 
 
+def _is_flight_domain(domain: str) -> bool:
+    """Check if the domain is a flight-booking site."""
+    d = domain.strip().lower()
+    return any(k in d for k in ("skyscanner", "google.com/flights", "kayak", "kiwi"))
+
+
+def _is_shopping_domain(domain: str) -> bool:
+    """Check if the domain is a shopping site."""
+    d = domain.strip().lower()
+    return any(k in d for k in ("amazon", "ebay", "etsy", "walmart", "target", "asos"))
+
+
 async def calendar_fetcher_node(state: AgentState) -> dict:
     handler = get_domain_handler(state["domain"])
     events = handler.fetch_calendar(state["intent"])
@@ -141,13 +153,48 @@ async def calendar_fetcher_node(state: AgentState) -> dict:
 
 
 async def bank_fetcher_node(state: AgentState) -> dict:
+    """Fetch bank/transaction data from DB + merge Gmail email data.
+
+    For flight domains: merges flight booking confirmations from Gmail.
+    For shopping domains: merges purchase receipts from Gmail.
+    For all domains: the handler's own DB-based fetch_bank runs first.
+    """
     handler = get_domain_handler(state["domain"])
     txns = handler.fetch_bank(state["intent"])
-    logger.info("bank_fetcher | transactions=%d", len(txns))
+
+    # Merge Gmail data based on domain type
+    user_id = state.get("user_id", "")
+    if user_id:
+        try:
+            if _is_flight_domain(state["domain"]):
+                email_flights = await gmail.fetch_email_flights(
+                    user_id, lookback_days=180
+                )
+                if email_flights:
+                    logger.info("bank_fetcher | gmail flights=%d", len(email_flights))
+                    txns.extend(email_flights)
+            else:
+                # For shopping and other domains, pull purchase receipts
+                email_receipts = await gmail.fetch_email_receipts(
+                    user_id, lookback_days=90
+                )
+                if email_receipts:
+                    logger.info("bank_fetcher | gmail receipts=%d", len(email_receipts))
+                    txns.extend(email_receipts)
+        except Exception:
+            logger.exception("bank_fetcher | gmail merge failed user=%s", user_id)
+
+    logger.info("bank_fetcher | total transactions=%d", len(txns))
     return {"bank_transactions": txns}
 
 
 async def purchase_history_fetcher_node(state: AgentState) -> dict:
+    """Fetch purchase history from DB.
+
+    Gmail receipts are already merged in bank_fetcher_node, so we don't
+    duplicate the Gmail API + LLM calls here. The audit prompt receives
+    both bank_transactions and purchase_history, so the LLM sees all data.
+    """
     handler = get_domain_handler(state["domain"])
     purchases = handler.fetch_purchase_history(state["intent"])
     logger.info("purchase_history_fetcher | records=%d", len(purchases))

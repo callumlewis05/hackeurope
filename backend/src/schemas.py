@@ -172,6 +172,39 @@ class InterventionListResponse(BaseModel):
 
 
 # ─────────────────────────────────────────────
+# Email Connection
+# ─────────────────────────────────────────────
+
+
+class EmailConnectRequest(BaseModel):
+    """Request body to connect a Gmail account via OAuth provider token."""
+
+    provider_token: str = Field(..., description="Google OAuth access token")
+    provider_refresh_token: Optional[str] = Field(
+        None,
+        description="Google OAuth refresh token (recommended for long-lived access)",
+    )
+
+
+class EmailStatusOut(BaseModel):
+    """Status of the user's email connection."""
+
+    connected: bool = False
+    provider: Optional[str] = None
+    email_address: Optional[str] = None
+    has_refresh_token: bool = False
+    connected_at: Optional[str] = None
+
+
+class EmailReceiptsOut(BaseModel):
+    """Parsed receipts or flight bookings extracted from Gmail."""
+
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    count: int = 0
+    source: str = "gmail"
+
+
+# ─────────────────────────────────────────────
 # LangGraph State
 # ─────────────────────────────────────────────
 

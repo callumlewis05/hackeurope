@@ -1,5 +1,16 @@
 import type { Metadata } from "next";
+import {Inter, Spectral} from "next/font/google";
 import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+});
+
+const spectral = Spectral({
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-spectral"
+})
 
 export const metadata: Metadata = {
   title: "Create Next App",
@@ -13,7 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="font-sans antialiased tracking-tight leading-tight">
+      <body className={`${inter.variable} ${spectral.variable} font-sans antialiased tracking-tight leading-tight`}>
         {children}
       </body>
     </html>

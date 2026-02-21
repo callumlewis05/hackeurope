@@ -8,6 +8,7 @@ import { FiArrowLeft, FiCalendar, FiCopy, FiTrash2 } from "react-icons/fi";
 
 import type { CalendarResponse } from "@/lib/api-types";
 import { addCalendar, deleteCalendar, listCalendars, toErrorMessage } from "@/lib/frontend-api";
+import { createClient } from "@/lib/supabase/client";
 
 type CalendarProvider = "google" | "apple" | "outlook" | null;
 
@@ -56,8 +57,10 @@ export default function DashboardSettingsPage() {
   const [calendars, setCalendars] = useState<CalendarResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGoogleConnected, setIsGoogleConnected] = useState<boolean | null>(null);
+  const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [accountError, setAccountError] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -84,7 +87,46 @@ export default function DashboardSettingsPage() {
         setIsLoading(false);
       }
     };
+
+    const loadConnectedAccounts = async () => {
+      try {
+        const supabase = createClient();
+        const {
+          data: { session },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
+        if (!isMounted) return;
+        if (sessionError) {
+          setAccountError("Unable to load connected accounts.");
+          setIsGoogleConnected(false);
+          return;
+        }
+
+        if (!session) {
+          router.replace("/");
+          return;
+        }
+
+        const { data, error: identitiesError } = await supabase.auth.getUserIdentities();
+        if (!isMounted) return;
+        if (identitiesError) {
+          setAccountError("Unable to load connected accounts.");
+          setIsGoogleConnected(false);
+          return;
+        }
+
+        setAccountError(null);
+        setIsGoogleConnected(data.identities.some((identity) => identity.provider === "google"));
+      } catch {
+        if (!isMounted) return;
+        setAccountError("Unable to load connected accounts.");
+        setIsGoogleConnected(false);
+      }
+    };
+
     void loadCalendars();
+    void loadConnectedAccounts();
     return () => isMounted = false;
   }, [router]);
 
@@ -93,7 +135,6 @@ export default function DashboardSettingsPage() {
 
     if (isSubmitting) return;
     setError(null);
-    setSuccess(null);
     setIsSubmitting(true);
 
     try {
@@ -110,7 +151,6 @@ export default function DashboardSettingsPage() {
       setCalendars((currentCalendars) => [newCalendar, ...currentCalendars]);
       setName("");
       setIcalUrl("");
-      setSuccess("Calendar added.");
     } catch {
       setError("Unable to reach the server.");
     } finally {
@@ -120,7 +160,6 @@ export default function DashboardSettingsPage() {
 
   const handleDeleteCalendar = async (calendarId: string) => {
     setError(null);
-    setSuccess(null);
 
     try {
       const response = await deleteCalendar(calendarId);
@@ -137,7 +176,6 @@ export default function DashboardSettingsPage() {
       setCalendars((currentCalendars) =>
         currentCalendars.filter((calendar) => calendar.id !== calendarId),
       );
-      setSuccess("Calendar deleted.");
     } catch {
       setError("Unable to reach the server.");
     }
@@ -145,7 +183,6 @@ export default function DashboardSettingsPage() {
 
   const handleCopyCalendarLink = async (calendarName: string, link: string) => {
     setError(null);
-    setSuccess(null);
 
     try {
       if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
@@ -154,9 +191,36 @@ export default function DashboardSettingsPage() {
       }
 
       await navigator.clipboard.writeText(link);
-      setSuccess(`${calendarName} link copied.`);
     } catch {
       setError("Unable to copy the calendar link.");
+    }
+  };
+
+  const handleConnectGoogle = async () => {
+    if (isConnectingGoogle || isGoogleConnected) return;
+
+    setAccountError(null);
+    setIsConnectingGoogle(true);
+
+    try {
+      const supabase = createClient();
+      const { error: linkError } = await supabase.auth.linkIdentity({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/dashboard/settings`,
+        },
+      });
+
+      if (linkError) {
+        setAccountError(linkError.message);
+        setIsConnectingGoogle(false);
+        return;
+      }
+
+      setIsConnectingGoogle(false);
+    } catch {
+      setAccountError("Unable to connect Google account.");
+      setIsConnectingGoogle(false);
     }
   };
 
@@ -205,8 +269,6 @@ export default function DashboardSettingsPage() {
           </div>
 
           {error ? <p className="text-sm text-red-600">{error}</p> : null}
-          {/*{success ? <p className="text-sm text-green-700">{success}</p> : null}*/}
-
           <button
             type="submit"
             disabled={isSubmitting}
@@ -276,6 +338,46 @@ export default function DashboardSettingsPage() {
               );
             })}
           </ul>
+
+          <div className="mt-12">
+            <h3 className="mb-3 text-stone-900 text-xl tracking-tighter font-[500]">Connected Email Accounts</h3>
+            <ul className="space-y-2">
+              <li className="flex items-center justify-between gap-2 border border-stone-200 p-4">
+                <div className="flex min-w-0 items-center gap-3">
+                  <Image
+                    src="/google.png"
+                    alt="Google"
+                    width={24}
+                    height={24}
+                    className="h-6 w-6 shrink-0 object-contain"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-stone-900">Google</p>
+                    <p className="text-xs text-stone-400">
+                      {isGoogleConnected === null
+                        ? "Checking connection..."
+                        : isGoogleConnected
+                          ? "Connected"
+                          : "Not connected"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleConnectGoogle}
+                  disabled={isConnectingGoogle || isGoogleConnected === null || Boolean(isGoogleConnected)}
+                  className="inline-flex h-9 items-center justify-center bg-[#1d1d1f] px-4 text-sm font-medium text-white disabled:bg-stone-100 disabled:text-stone-400"
+                >
+                  {isGoogleConnected
+                    ? "Connected"
+                    : isConnectingGoogle
+                      ? "Connecting..."
+                      : "Connect"}
+                </button>
+              </li>
+            </ul>
+            {accountError ? <p className="mt-2 text-sm text-red-600">{accountError}</p> : null}
+          </div>
         </div>
       </section>
     </main>

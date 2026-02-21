@@ -13,7 +13,6 @@ function scrapeSearchData(root = document) {
   const flightDates = document.querySelectorAll('h3[data-backpack-ds-component="Text"] span');
   const flightNumbers = document.querySelectorAll('.AirlineLogoTitle_container__MTE3Z span');
 
-
   const outboundText = trip_details[0].querySelectorAll('[data-backpack-ds-component="Text"]');
   let returnText = [];
   if (trip_details.length > 1) {
@@ -49,6 +48,8 @@ function scrapeSearchData(root = document) {
   );
 
   console.log(data);
+
+  return data;
 }
 
 function waitForElement(selector, callback) {
@@ -73,5 +74,50 @@ function waitForElement(selector, callback) {
 }
 
 waitForElement('[data-testid="leg-summary"]', () => {
-  scrapeSearchData(document);
+  chrome.runtime.sendMessage({ type: 'FLIGHT_DATA', payload: scrapeSearchData(document) });
 });
+
+
+function showModal({ title, message }) {
+  if (document.getElementById("flight-alert-modal")) return;
+
+  const overlay = document.createElement("div");
+  overlay.id = "flight-alert-modal";
+  overlay.innerHTML = `
+    <div style="
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    ">
+      <div style="
+        background: white;
+        border-radius: 12px;
+        padding: 20px;
+        max-width: 420px;
+        width: 90%;
+        box-shadow: 0 10px 30px rgba(0,0,0,.25);
+        font-family: system-ui, sans-serif;
+      ">
+        <h2 style="margin-top:0">${title}</h2>
+        <p>${message}</p>
+        <button id="close-modal" style="
+          margin-top: 16px;
+          padding: 8px 14px;
+          border-radius: 6px;
+          border: none;
+          cursor: pointer;
+        ">
+          Close
+        </button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  overlay.querySelector("#close-modal").onclick = () => overlay.remove();
+}

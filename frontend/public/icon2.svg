@@ -1,0 +1,17 @@
+<svg width="257" height="257" viewBox="0 0 257 257" fill="none" xmlns="http://www.w3.org/2000/svg">
+<circle cx="128.5" cy="40.5" r="40.5" fill="#FF4053"/>
+<circle cx="128.5" cy="216.5" r="40.5" fill="#FF4053"/>
+<circle cx="128.5" cy="128.5" r="40.5" fill="#FF4053"/>
+<circle cx="216.5" cy="128.5" r="40.5" fill="#FF4053"/>
+<circle cx="40.5" cy="128.5" r="40.5" fill="#FF4053"/>
+<circle cx="66.2746" cy="66.2746" r="40.5" transform="rotate(-45 66.2746 66.2746)" fill="#FF4053"/>
+<circle cx="190.725" cy="190.725" r="40.5" transform="rotate(-45 190.725 190.725)" fill="#FF4053"/>
+<circle cx="128.5" cy="128.5" r="40.5" transform="rotate(-45 128.5 128.5)" fill="#FF4053"/>
+<circle cx="190.725" cy="66.2746" r="40.5" transform="rotate(-45 190.725 66.2746)" fill="#FF4053"/>
+<circle cx="66.2746" cy="190.725" r="40.5" transform="rotate(-45 66.2746 190.725)" fill="#FF4053"/>
+<circle cx="128.5" cy="128.5" r="82.5" fill="#FF4053"/>
+<path d="M48.2667 116.428C67.3036 97.8388 97.6964 97.8388 116.733 116.428L125 124.5L116.733 132.572C97.6964 151.161 67.3036 151.161 48.2667 132.572L40 124.5L48.2667 116.428Z" fill="white"/>
+<path d="M140.267 116.428C159.304 97.8388 189.696 97.8388 208.733 116.428L217 124.5L208.733 132.572C189.696 151.161 159.304 151.161 140.267 132.572L132 124.5L140.267 116.428Z" fill="white"/>
+<rect x="166" y="116" width="20" height="20" rx="10" fill="black"/>
+<rect x="71" y="116" width="20" height="20" rx="10" fill="black"/>
+</svg>

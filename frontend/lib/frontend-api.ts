@@ -1,4 +1,11 @@
-import type { ApiValidationError, CalendarResponse, UserProfileResponse } from "@/lib/api-types";
+import type {
+  ApiValidationError,
+  CalendarResponse,
+  InterventionListResponse,
+  InterventionResponse,
+  InterventionStatsResponse,
+  UserProfileResponse,
+} from "@/lib/api-types";
 
 interface ApiResult<T> {
   ok: boolean;
@@ -75,5 +82,53 @@ export async function addCalendar(name: string, icalUrl: string) {
 export async function deleteCalendar(calendarId: string) {
   return apiRequest<null>(`/api/calendars/${encodeURIComponent(calendarId)}`, {
     method: "DELETE",
+  });
+}
+
+interface ListInterventionsQuery {
+  domain?: string;
+  intervened_only?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+function toQueryString(params: ListInterventionsQuery = {}) {
+  const query = new URLSearchParams();
+
+  if (params.domain) {
+    query.set("domain", params.domain);
+  }
+
+  if (typeof params.intervened_only === "boolean") {
+    query.set("intervened_only", String(params.intervened_only));
+  }
+
+  if (typeof params.limit === "number") {
+    query.set("limit", String(params.limit));
+  }
+
+  if (typeof params.offset === "number") {
+    query.set("offset", String(params.offset));
+  }
+
+  const serializedQuery = query.toString();
+  return serializedQuery ? `?${serializedQuery}` : "";
+}
+
+export async function listInterventions(params: ListInterventionsQuery = {}) {
+  return apiRequest<InterventionListResponse>(`/api/interventions${toQueryString(params)}`, {
+    method: "GET",
+  });
+}
+
+export async function getInterventionStats() {
+  return apiRequest<InterventionStatsResponse>("/api/interventions/stats", {
+    method: "GET",
+  });
+}
+
+export async function getIntervention(interventionId: string) {
+  return apiRequest<InterventionResponse>(`/api/interventions/${encodeURIComponent(interventionId)}`, {
+    method: "GET",
   });
 }

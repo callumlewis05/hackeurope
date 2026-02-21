@@ -23,3 +23,42 @@ export interface ApiValidationError {
     ctx?: Record<string, unknown>;
   }>;
 }
+
+export interface InterventionResponse {
+  id: string;
+  domain: string;
+  title: string;
+  intent_type: string;
+  intent_data: Record<string, unknown>;
+  risk_factors: string[];
+  intervention_message: string;
+  was_intervened: boolean;
+  compute_cost: number;
+  money_saved: number;
+  platform_fee: number;
+  hour_of_day: number;
+  analyzed_at: string;
+}
+
+export interface InterventionListResponse {
+  items: InterventionResponse[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface InterventionDomainStatsResponse {
+  domain: string;
+  total: number;
+  intervened: number;
+  money_saved: number;
+}
+
+export interface InterventionStatsResponse {
+  total_analyses: number;
+  total_interventions: number;
+  total_money_saved: number;
+  total_compute_cost: number;
+  total_platform_fees: number;
+  by_domain: InterventionDomainStatsResponse[];
+}

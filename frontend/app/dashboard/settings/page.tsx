@@ -208,6 +208,10 @@ export default function DashboardSettingsPage() {
         provider: "google",
         options: {
           redirectTo: `${window.location.origin}/dashboard/settings`,
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',  // force consent to get refresh_token
+          },
         },
       });
 

@@ -4,6 +4,7 @@ import type {
   InterventionListResponse,
   InterventionResponse,
   InterventionStatsResponse,
+  EmailStatusResponse,
   UserProfileResponse,
 } from "@/lib/api-types";
 
@@ -130,5 +131,27 @@ export async function getInterventionStats() {
 export async function getIntervention(interventionId: string) {
   return apiRequest<InterventionResponse>(`/api/interventions/${encodeURIComponent(interventionId)}`, {
     method: "GET",
+  });
+}
+
+export async function getEmailStatus() {
+  return apiRequest<EmailStatusResponse>("/api/email/status", {
+    method: "GET",
+  });
+}
+
+export async function connectEmail(providerToken: string, providerRefreshToken: string | null) {
+  return apiRequest<EmailStatusResponse>("/api/email/connect", {
+    method: "POST",
+    body: JSON.stringify({
+      provider_token: providerToken,
+      provider_refresh_token: providerRefreshToken,
+    }),
+  });
+}
+
+export async function disconnectEmail() {
+  return apiRequest<null>("/api/email/disconnect", {
+    method: "DELETE",
   });
 }

@@ -62,3 +62,11 @@ export interface InterventionStatsResponse {
   total_platform_fees: number;
   by_domain: InterventionDomainStatsResponse[];
 }
+
+export interface EmailStatusResponse {
+  connected: boolean;
+  provider: string | null;
+  email_address: string | null;
+  has_refresh_token: boolean;
+  connected_at: string | null;
+}

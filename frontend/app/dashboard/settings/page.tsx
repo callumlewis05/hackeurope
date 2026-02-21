@@ -6,8 +6,16 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { FiArrowLeft, FiCalendar, FiCopy, FiTrash2 } from "react-icons/fi";
 
-import type { CalendarResponse } from "@/lib/api-types";
-import { addCalendar, deleteCalendar, listCalendars, toErrorMessage } from "@/lib/frontend-api";
+import type { CalendarResponse, EmailStatusResponse } from "@/lib/api-types";
+import {
+  addCalendar,
+  connectEmail,
+  deleteCalendar,
+  disconnectEmail,
+  getEmailStatus,
+  listCalendars,
+  toErrorMessage,
+} from "@/lib/frontend-api";
 import { createClient } from "@/lib/supabase/client";
 
 type CalendarProvider = "google" | "apple" | "outlook" | null;
@@ -59,8 +67,10 @@ export default function DashboardSettingsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleConnected, setIsGoogleConnected] = useState<boolean | null>(null);
   const [isConnectingGoogle, setIsConnectingGoogle] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<EmailStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [accountSuccess, setAccountSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -116,8 +126,40 @@ export default function DashboardSettingsPage() {
           return;
         }
 
+        const googleLinked = data.identities.some((identity) => identity.provider === "google");
+        setIsGoogleConnected(googleLinked);
         setAccountError(null);
-        setIsGoogleConnected(data.identities.some((identity) => identity.provider === "google"));
+
+        // If Google is linked, check if we also have the backend email connection
+        // (provider_token may have been sent in a previous session)
+        if (googleLinked) {
+          try {
+            const statusResponse = await getEmailStatus();
+            if (statusResponse.ok) {
+              setEmailStatus(statusResponse.data as EmailStatusResponse);
+            }
+          } catch {
+            // Non-critical — the status check is informational
+          }
+        }
+
+        // After OAuth redirect, Supabase includes provider_token in the session.
+        // We grab it and send it to the backend to enable Gmail/Calendar integration.
+        if (session.provider_token) {
+          try {
+            const connectResponse = await connectEmail(
+              session.provider_token,
+              session.provider_refresh_token ?? null,
+            );
+            if (!isMounted) return;
+            if (connectResponse.ok) {
+              setEmailStatus(connectResponse.data as EmailStatusResponse);
+              setAccountSuccess("Gmail & Google Calendar connected!");
+            }
+          } catch {
+            // Non-critical — user can try again
+          }
+        }
       } catch {
         if (!isMounted) return;
         setAccountError("Unable to load connected accounts.");
@@ -127,7 +169,7 @@ export default function DashboardSettingsPage() {
 
     void loadCalendars();
     void loadConnectedAccounts();
-    return () => isMounted = false;
+    return () => { isMounted = false; };
   }, [router]);
 
   const handleAddCalendar = async (event: FormEvent<HTMLFormElement>) => {
@@ -200,6 +242,7 @@ export default function DashboardSettingsPage() {
     if (isConnectingGoogle || isGoogleConnected) return;
 
     setAccountError(null);
+    setAccountSuccess(null);
     setIsConnectingGoogle(true);
 
     try {
@@ -207,10 +250,11 @@ export default function DashboardSettingsPage() {
       const { error: linkError } = await supabase.auth.linkIdentity({
         provider: "google",
         options: {
+          scopes: "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly",
           redirectTo: `${window.location.origin}/dashboard/settings`,
           queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',  // force consent to get refresh_token
+            access_type: "offline",
+            prompt: "consent",
           },
         },
       });
@@ -221,12 +265,53 @@ export default function DashboardSettingsPage() {
         return;
       }
 
+      // User will be redirected to Google, then back here.
+      // The useEffect above will detect provider_token and send it to the backend.
       setIsConnectingGoogle(false);
     } catch {
       setAccountError("Unable to connect Google account.");
       setIsConnectingGoogle(false);
     }
   };
+
+  const handleDisconnectGoogle = async () => {
+    setAccountError(null);
+    setAccountSuccess(null);
+
+    try {
+      const response = await disconnectEmail();
+      if (response.ok || response.status === 204) {
+        setEmailStatus(null);
+        setAccountSuccess("Gmail disconnected.");
+      } else {
+        setAccountError(toErrorMessage(response.data, "Unable to disconnect."));
+      }
+    } catch {
+      setAccountError("Unable to reach the server.");
+    }
+  };
+
+  const googleDescription = (() => {
+    if (isGoogleConnected === null) return "Checking connection...";
+    if (!isGoogleConnected) return "Not connected";
+    if (emailStatus?.connected && emailStatus.email_address) {
+      return `${emailStatus.email_address} — Gmail & Calendar active`;
+    }
+    if (emailStatus?.connected) return "Gmail & Calendar connected";
+    return "Google linked — Gmail sync pending";
+  })();
+
+  const googleButtonLabel = (() => {
+    if (isConnectingGoogle) return "Connecting...";
+    if (emailStatus?.connected) return "Connected";
+    if (isGoogleConnected) return "Sync Gmail";
+    return "Connect";
+  })();
+
+  const isGoogleButtonDisabled =
+    isConnectingGoogle ||
+    isGoogleConnected === null ||
+    Boolean(emailStatus?.connected);
 
   return (
     <main className="mx-auto w-full max-w-xl py-12">
@@ -344,7 +429,10 @@ export default function DashboardSettingsPage() {
           </ul>
 
           <div className="mt-12">
-            <h3 className="mb-3 text-stone-900 text-xl tracking-tighter font-[500]">Connected Email Accounts</h3>
+            <h3 className="mb-3 text-stone-900 text-xl tracking-tighter font-[500]">Connected Accounts</h3>
+            <p className="mb-4 text-xs text-stone-500">
+              Connect your Google account to automatically sync Gmail receipts, flight bookings, and Google Calendar events.
+            </p>
             <ul className="space-y-2">
               <li className="flex items-center justify-between gap-2 border border-stone-200 p-4">
                 <div className="flex min-w-0 items-center gap-3">
@@ -357,30 +445,32 @@ export default function DashboardSettingsPage() {
                   />
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-stone-900">Google</p>
-                    <p className="text-xs text-stone-400">
-                      {isGoogleConnected === null
-                        ? "Checking connection..."
-                        : isGoogleConnected
-                          ? "Connected"
-                          : "Not connected"}
-                    </p>
+                    <p className="text-xs text-stone-400">{googleDescription}</p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleConnectGoogle}
-                  disabled={isConnectingGoogle || isGoogleConnected === null || Boolean(isGoogleConnected)}
-                  className="inline-flex h-9 items-center justify-center bg-[#1d1d1f] px-4 text-sm font-medium text-white disabled:bg-stone-100 disabled:text-stone-400"
-                >
-                  {isGoogleConnected
-                    ? "Connected"
-                    : isConnectingGoogle
-                      ? "Connecting..."
-                      : "Connect"}
-                </button>
+                <div className="flex items-center gap-2">
+                  {emailStatus?.connected ? (
+                    <button
+                      type="button"
+                      onClick={handleDisconnectGoogle}
+                      className="inline-flex h-9 items-center justify-center bg-stone-100 px-4 text-sm font-medium text-stone-600 hover:bg-stone-200/65"
+                    >
+                      Disconnect
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogle}
+                    disabled={isGoogleButtonDisabled}
+                    className="inline-flex h-9 items-center justify-center bg-[#1d1d1f] px-4 text-sm font-medium text-white disabled:bg-stone-100 disabled:text-stone-400"
+                  >
+                    {googleButtonLabel}
+                  </button>
+                </div>
               </li>
             </ul>
             {accountError ? <p className="mt-2 text-sm text-red-600">{accountError}</p> : null}
+            {accountSuccess ? <p className="mt-2 text-sm text-green-600">{accountSuccess}</p> : null}
           </div>
         </div>
       </section>

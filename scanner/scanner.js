@@ -14,23 +14,26 @@ function scrapeSearchData(root = document) {
   const flightNumbers = document.querySelectorAll('.AirlineLogoTitle_container__MTE3Z span');
 
   const outboundText = trip_details[0].querySelectorAll('[data-backpack-ds-component="Text"]');
+  console.log(outboundText);
   let returnText = [];
   if (trip_details.length > 1) {
     returnText = trip_details[1].querySelectorAll('[data-backpack-ds-component="Text"]')
   }
 
+  const connecting_flight = outboundText.length > 11;
+
   data.intent.outbound.airline = outboundText[0].innerHTML.split(';')[1];
   data.intent.outbound.flight_number = flightNumbers[3].textContent;
   data.intent.outbound.departure_date = flightDates[0].textContent;
-  data.intent.outbound.departure_time = outboundText[2].innerHTML;
-  data.intent.outbound.departure_airport = outboundText[4].innerHTML;
-  data.intent.outbound.arrival_time = outboundText[8].innerHTML;
-  data.intent.outbound.arrival_airport = outboundText[10].innerHTML;
-  data.intent.outbound.duration = outboundText[5].innerHTML + "m";
-  data.intent.outbound.stops = outboundText[6].innerHTML;
+  data.intent.outbound.departure_time = outboundText[2 + connecting_flight].innerHTML;
+  data.intent.outbound.departure_airport = outboundText[4 + connecting_flight].innerHTML;
+  data.intent.outbound.arrival_time = outboundText[8 + connecting_flight].innerHTML;
+  data.intent.outbound.arrival_airport = outboundText[10 + connecting_flight].innerHTML;
+  data.intent.outbound.duration = outboundText[5 + connecting_flight].innerHTML + "m";
+  data.intent.outbound.stops = outboundText[6 + connecting_flight].innerHTML;
   data.intent.outbound.self_transfer = (
-    outboundText[6].innerHTML === "Direct" 
-    ? false : outboundText[10]
+    outboundText[6 + connecting_flight].innerHTML === "Direct" 
+    ? false : outboundText[10 + connecting_flight]
   );
 
   data.intent.return.airline = returnText[0].innerHTML.split(';')[1];
@@ -77,47 +80,36 @@ waitForElement('[data-testid="leg-summary"]', () => {
   chrome.runtime.sendMessage({ type: 'FLIGHT_DATA', payload: scrapeSearchData(document) });
 });
 
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'SHOW_MODAL') {
+    showModal(msg.payload);
+  }
+});
 
-function showModal({ title, message }) {
-  if (document.getElementById("flight-alert-modal")) return;
 
-  const overlay = document.createElement("div");
-  overlay.id = "flight-alert-modal";
-  overlay.innerHTML = `
-    <div style="
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.4);
-      z-index: 999999;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    ">
-      <div style="
-        background: white;
-        border-radius: 12px;
-        padding: 20px;
-        max-width: 420px;
-        width: 90%;
-        box-shadow: 0 10px 30px rgba(0,0,0,.25);
-        font-family: system-ui, sans-serif;
-      ">
-        <h2 style="margin-top:0">${title}</h2>
-        <p>${message}</p>
-        <button id="close-modal" style="
-          margin-top: 16px;
-          padding: 8px 14px;
-          border-radius: 6px;
-          border: none;
-          cursor: pointer;
-        ">
-          Close
-        </button>
-      </div>
-    </div>
-  `;
+async function showModal({ title, message }) {
+  if (document.getElementById("flight-alert-modal-overlay")) return;
 
+  // Load modal HTML
+  const htmlText = await fetch(chrome.runtime.getURL("notification/notification.html"))
+    .then(res => res.text());
+
+  const template = document.createElement("div");
+  template.innerHTML = htmlText;
+
+  const overlay = template.firstElementChild;
   document.body.appendChild(overlay);
 
-  overlay.querySelector("#close-modal").onclick = () => overlay.remove();
+  // Load CSS
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = chrome.runtime.getURL("notification/notification.css");
+  document.head.appendChild(link);
+
+  // Set content
+  overlay.querySelector("#modal-title").textContent = title;
+  overlay.querySelector("#modal-message").textContent = message;
+
+  // Close button
+  overlay.querySelector("#modal-close").onclick = () => overlay.remove();
 }

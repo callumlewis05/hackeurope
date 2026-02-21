@@ -20,5 +20,14 @@
   "background": {
     "service_worker": "scanner/background.js"
   },
-  "permissions": ["notifications"]
+  "permissions": ["notifications"],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "notification/notification.html",
+        "notification/notification.css"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

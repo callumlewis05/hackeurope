@@ -114,6 +114,6 @@ async function showModal({ title, message }) {
 
   // Close button
   overlay.querySelector("#modal-close").onclick = () => overlay.remove();
-  overlay.querySelector("#positive-feedback-button").onclick = () => {overlay.remove(); sendFeedback("positive")};
-  overlay.querySelector("#negative-feedback-button").onclick = () => {overlay.remove(); sendFeedback("negative")};
+  overlay.querySelector("#positive-feedback-button").onclick = () => {overlay.remove(); sendFeedback(true)};
+  overlay.querySelector("#negative-feedback-button").onclick = () => {overlay.remove(); sendFeedback(false)};
 }

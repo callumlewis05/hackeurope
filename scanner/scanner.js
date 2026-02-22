@@ -1,7 +1,6 @@
-function scrapeSearchData(root = document) {
+function scrapeFlightData(root = document) {
   const data = {};
 
-  data.user_id = "";
   data.domain = "skyscanner.net";
   data.intent = {};
 
@@ -53,6 +52,33 @@ function scrapeSearchData(root = document) {
   return data;
 }
 
+function scrapeAmazonData(root = document) {
+  const data = {};
+
+  data.domain = "amazon.com";
+  data.intent = {};
+
+  data.intent.type = "purchase";
+  data.intent.products = [];
+
+  const productNames = Array.from(root.querySelectorAll('.sc-grid-item-product-title'));
+  const productPrices = Array.from(root.querySelectorAll('.sc-product-price'));
+
+  productNames.forEach((nameEl, index) => {
+    const priceEl = productPrices[index];
+    if (!priceEl) return;
+
+    data.intent.products.push({
+      name: nameEl.textContent.trim(),
+      price: priceEl.textContent.trim()
+    });
+  });
+
+  console.log(data);
+
+  return data;
+}
+
 function waitForElement(selector, callback) {
   const existing = document.querySelector(selector);
   if (existing) {
@@ -74,9 +100,18 @@ function waitForElement(selector, callback) {
   });
 }
 
-waitForElement('[data-testid="leg-summary"]', () => {
-  chrome.runtime.sendMessage({ type: 'FLIGHT_DATA', payload: scrapeSearchData(document) });
-});
+if (window.location.href.startsWith("https://www.skyscanner.net/transport/flights/")) {
+  waitForElement('[data-testid="leg-summary"]', () => {
+    chrome.runtime.sendMessage({ type: 'FLIGHT_DATA', payload: scrapeFlightData(document) });
+  });
+}
+
+if (window.location.href.startsWith("https://www.amazon.com/gp/cart/")) {
+  console.log("running scan func")
+  waitForElement('#sc-active-cart', () => {
+    chrome.runtime.sendMessage({ type: 'AMAZON_DATA', payload: scrapeAmazonData(document) });
+  });
+}
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'SHOW_MODAL') {

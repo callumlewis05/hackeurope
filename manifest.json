@@ -17,7 +17,8 @@
     {
       "js": ["scanner/scanner.js"],
       "matches": [
-        "https://www.skyscanner.net/transport/flights/*"
+        "https://www.skyscanner.net/transport/flights/*",
+        "https://www.amazon.com/gp/cart/*"
       ],
       "run_at": "document_idle",
       "type": "module"

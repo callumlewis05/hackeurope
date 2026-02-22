@@ -221,7 +221,7 @@ export default function DashboardPage() {
                 {!isLoading
                   ? interventions.map((event) => {
                     const isSelected = selectedEventId === event.id;
-                    const decision = toDecision(event.was_intervened);
+                    const decision = toDecision(event.feedback);
 
                     return (
                       <tr
@@ -264,7 +264,7 @@ export default function DashboardPage() {
         </div>
 
         {selectedEvent ? (
-          <aside className="sticky top-5 border border-stone-200 p-5 md:col-span-1 self-start">
+          <aside className="sticky top-5 border border-stone-200 p-5 md:col-span-1 mt-22 self-start">
             <div className="mb-4 flex items-start justify-between gap-3">
               <div>
                 <p className="text-xs uppercase tracking-wide text-stone-500">
@@ -300,7 +300,7 @@ export default function DashboardPage() {
               </div>
               <div>
                 <dt className="text-stone-500">Decision</dt>
-                <dd className="font-medium text-[#111]">{toDecision(selectedEvent.was_intervened)}</dd>
+                <dd className="font-medium text-[#111]">{toDecision(selectedEvent.feedback)}</dd>
               </div>
               <div>
                 <dt className="text-stone-500">Money Saved</dt>

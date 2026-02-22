@@ -34,6 +34,7 @@ export interface InterventionResponse {
   intervention_message: string;
   was_intervened: boolean;
   compute_cost: number;
+  feedback: boolean; // true if blocked, false if allowed
   money_saved: number;
   platform_fee: number;
   hour_of_day: number;

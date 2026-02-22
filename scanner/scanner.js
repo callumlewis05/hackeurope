@@ -20,6 +20,10 @@ function scrapeSearchData(root = document) {
     returnText = trip_details[1].querySelectorAll('[data-backpack-ds-component="Text"]')
   }
 
+  const cost = document.querySelector('[data-testid="CtaSection"] span').textContent;
+
+  data.cost = cost;
+
   const connecting_flight = outboundText.length > 11;
 
   data.intent.outbound.airline = outboundText[0].textContent.split(';')[1];

@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
 import { createClient } from "@/lib/supabase/client";
-import { getMe } from "@/lib/frontend-api";
 
 export default function Home() {
   const router = useRouter();
@@ -69,8 +68,6 @@ export default function Home() {
           return;
         }
 
-        // Ensure backend profile exists before redirecting
-        await getMe().catch(() => {});
         router.push("/dashboard");
         router.refresh();
         return;
@@ -96,8 +93,6 @@ export default function Home() {
         return;
       }
 
-      // Ensure backend profile is created before redirecting
-      await getMe().catch(() => {});
       router.push("/dashboard");
       router.refresh();
     } catch {

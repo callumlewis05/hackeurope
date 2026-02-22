@@ -15,7 +15,6 @@ import { getUserDisplayName, useDashboardUser } from "./user-context";
 type StatCardProps = {
   label: string;
   value: string;
-  note?: string;
 };
 
 function formatCurrency(amount: number) {
@@ -60,13 +59,12 @@ function toDecision(wasIntervened: boolean) {
   return wasIntervened ? "Blocked" : "Allowed";
 }
 
-function StatCard({ label, value, note }: StatCardProps) {
+function StatCard({ label, value }: StatCardProps) {
   return (
     <article className="bg-stone-100 p-6">
       <p className="text-[0.95rem] font-[450] mb-6">{label}</p>
       <div className={"flex items-end gap-2"}>
         <p className="mt-2 text-4xl font-normal tracking-tighter">{value}</p>
-        {/*{note ? <p className="mt-2 text-xs font-[450] text-stone-500">{note}</p> : null}*/}
       </div>
     </article>
   );
@@ -74,7 +72,7 @@ function StatCard({ label, value, note }: StatCardProps) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, isLoadingUser } = useDashboardUser();
+  const { user } = useDashboardUser();
   const [interventions, setInterventions] = useState<InterventionResponse[]>([]);
   const [stats, setStats] = useState<InterventionStatsResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -143,23 +141,17 @@ export default function DashboardPage() {
     () => stats?.total_interventions ?? interventions.filter((item) => item.was_intervened).length,
     [interventions, stats],
   );
-  const totalAnalyses = useMemo(
-    () => stats?.total_analyses ?? interventions.length,
+  const totalPlatformFees = useMemo(
+    () => stats?.total_platform_fees ?? interventions.reduce((sum, item) => sum + item.platform_fee, 0),
     [interventions, stats],
   );
-  const totalComputeCost = useMemo(
-    () => stats?.total_compute_cost ?? interventions.reduce((sum, item) => sum + item.compute_cost, 0),
-    [interventions, stats],
-  );
-  const averageSaved = totalAnalyses > 0 ? totalMoneySaved / totalAnalyses : 0;
   const statCards: StatCardProps[] = [
     {
       label: "Total Money Saved",
       value: formatCurrency(totalMoneySaved),
-      note: `Average Saved: ${formatCurrency(averageSaved)}`,
     },
     { label: "Interventions", value: formatCount(totalInterventions) },
-    { label: "Compute Cost", value: formatCurrency(totalComputeCost) },
+    { label: "Platform Fee", value: formatCurrency(totalPlatformFees) },
   ];
 
   const selectedEvent = useMemo(
@@ -174,7 +166,7 @@ export default function DashboardPage() {
     setSelectedEventId((currentId) => (currentId === eventId ? null : eventId));
   };
 
-  const welcomeTitle = isLoadingUser ? "Welcome back!" : `Welcome back, ${getUserDisplayName(user)}!`;
+  const welcomeTitle = user ? `Welcome back, ${getUserDisplayName(user)}!` : "Welcome back!";
 
   return (
     <main className="mx-auto w-full max-w-[1200px] py-20">
@@ -183,7 +175,7 @@ export default function DashboardPage() {
           <div className="font-spectral text-4xl -tracking-[0.2rem] mb-12">{welcomeTitle}</div>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {statCards.map((card) => (
-              <StatCard key={card.label} label={card.label} value={card.value} note={card.note} />
+              <StatCard key={card.label} label={card.label} value={card.value} />
             ))}
           </div>
 
@@ -313,10 +305,6 @@ export default function DashboardPage() {
               <div>
                 <dt className="text-stone-500">Money Saved</dt>
                 <dd className="font-medium text-[#111]">{formatCurrency(selectedEvent.money_saved)}</dd>
-              </div>
-              <div>
-                <dt className="text-stone-500">Compute Cost</dt>
-                <dd className="font-medium text-[#111]">{formatCurrency(selectedEvent.compute_cost)}</dd>
               </div>
               <div>
                 <dt className="text-stone-500">Platform Fee</dt>

@@ -4,10 +4,16 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import type {
+  InterventionCompactCountResponse,
   InterventionListResponse,
   InterventionResponse,
 } from "@/lib/api-types";
-import { listInterventions, toErrorMessage } from "@/lib/frontend-api";
+import {
+  getInterventionCategories,
+  getInterventionMistakeTypes,
+  listInterventions,
+  toErrorMessage,
+} from "@/lib/frontend-api";
 import { useDashboardUser } from "../user-context";
 import { ApexChart } from "./apex-chart";
 
@@ -22,10 +28,7 @@ interface PeriodOption {
 
 interface CategoryRow {
   category: string;
-  analyses: number;
-  mistakes: number;
-  moneySaved: number;
-  interventionRate: number;
+  count: number;
 }
 
 interface TrendRow {
@@ -39,7 +42,6 @@ interface TrendRow {
 
 interface EnrichedIntervention extends InterventionResponse {
   analyzedTimestamp: number;
-  derivedCategory: string;
 }
 
 const PERIOD_OPTIONS: PeriodOption[] = [
@@ -48,20 +50,7 @@ const PERIOD_OPTIONS: PeriodOption[] = [
   { value: "all", label: "All", days: null },
 ];
 
-const CATEGORY_KEYS = new Set([
-  "category",
-  "purchase_category",
-  "product_category",
-  "item_category",
-  "intent_category",
-  "subcategory",
-]);
-
 const ACCENT_COLOR = "#FF4053";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function toTitleCase(value: string) {
   return value
@@ -71,7 +60,7 @@ function toTitleCase(value: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function sanitizeCategory(value: string) {
+function sanitizeLabel(value: string) {
   const cleaned = value.replace(/\s+/g, " ").trim();
   if (!cleaned) {
     return "";
@@ -79,81 +68,60 @@ function sanitizeCategory(value: string) {
   return toTitleCase(cleaned);
 }
 
-function extractCategoryFromIntentData(value: unknown, depth = 0): string | null {
-  if (depth > 4 || !value) {
-    return null;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getLookbackDays(period: TimePeriod): number | undefined {
+  if (period === "week") {
+    return 7;
+  }
+  if (period === "month") {
+    return 30;
+  }
+  return undefined;
+}
+
+function parseCompactCountPayload(payload: unknown): CategoryRow[] {
+  let source = payload;
+
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source) as unknown;
+    } catch {
+      return [];
+    }
   }
 
-  if (Array.isArray(value)) {
-    for (const nestedValue of value) {
-      const nestedCategory = extractCategoryFromIntentData(nestedValue, depth + 1);
-      if (nestedCategory) {
-        return nestedCategory;
+  if (!Array.isArray(source)) {
+    return [];
+  }
+
+  const aggregate = new Map<string, number>();
+
+  for (const entry of source) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+
+    for (const [rawLabel, rawCount] of Object.entries(entry)) {
+      const category = sanitizeLabel(rawLabel);
+      const count = typeof rawCount === "number" ? rawCount : Number(rawCount);
+
+      if (!category || !Number.isFinite(count)) {
+        continue;
       }
-    }
-    return null;
-  }
 
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  for (const [rawKey, nestedValue] of Object.entries(value)) {
-    const key = rawKey.toLowerCase();
-
-    if (CATEGORY_KEYS.has(key) && typeof nestedValue === "string") {
-      const normalized = sanitizeCategory(nestedValue);
-      if (normalized) {
-        return normalized;
-      }
-    }
-
-    const nestedCategory = extractCategoryFromIntentData(nestedValue, depth + 1);
-    if (nestedCategory) {
-      return nestedCategory;
+      aggregate.set(category, (aggregate.get(category) ?? 0) + count);
     }
   }
 
-  return null;
-}
-
-function inferCategoryFromRiskFactors(riskFactors: string[]) {
-  const normalized = riskFactors.join(" ").toLowerCase();
-
-  if (normalized.includes("subscription")) return "Subscriptions";
-  if (normalized.includes("impulse")) return "Impulse Spending";
-  if (normalized.includes("urgent")) return "Urgent Purchases";
-  if (normalized.includes("duplicate")) return "Duplicate Orders";
-  if (normalized.includes("upsell")) return "Upsell Pressure";
-  if (normalized.includes("finance")) return "Financial Risk";
-
-  return null;
-}
-
-function inferCategoryFromDomain(domain: string) {
-  const normalized = domain.toLowerCase();
-
-  if (/(amazon|ebay|etsy|walmart|target|aliexpress)/.test(normalized)) return "Shopping";
-  if (/(booking|airbnb|expedia|trip|flight|hotel)/.test(normalized)) return "Travel";
-  if (/(ubereats|doordash|grubhub|deliveroo)/.test(normalized)) return "Food Delivery";
-  if (/(uber|lyft|taxi|train|rail)/.test(normalized)) return "Transport";
-  if (/(apple|google|microsoft|adobe|spotify|netflix)/.test(normalized)) return "Digital Services";
-
-  return "Uncategorized";
-}
-
-function deriveCategory(intervention: InterventionResponse) {
-  const intentCategory = extractCategoryFromIntentData(intervention.intent_data);
-  if (intentCategory) {
-    return intentCategory;
-  }
-
-  const riskCategory = inferCategoryFromRiskFactors(intervention.risk_factors ?? []);
-  if (riskCategory) {
-    return riskCategory;
-  }
-
-  return inferCategoryFromDomain(intervention.domain);
+  return [...aggregate.entries()]
+    .map(([category, count]) => ({
+      category,
+      count,
+    }))
+    .sort((rowA, rowB) => rowB.count - rowA.count);
 }
 
 function formatCurrency(amount: number) {
@@ -284,32 +252,6 @@ function formatBucketLabel(timestamp: number, granularity: BucketGranularity) {
   }).format(date);
 }
 
-function buildCategoryRows(items: EnrichedIntervention[]): CategoryRow[] {
-  const aggregate = new Map<string, { analyses: number; mistakes: number; moneySaved: number }>();
-
-  for (const item of items) {
-    const key = item.derivedCategory;
-    const current = aggregate.get(key) ?? { analyses: 0, mistakes: 0, moneySaved: 0 };
-    current.analyses += 1;
-    current.moneySaved += item.money_saved;
-    if (item.was_intervened) {
-      current.mistakes += 1;
-    }
-    aggregate.set(key, current);
-  }
-
-  return [...aggregate.entries()].map(([category, value]) => {
-    const rate = value.analyses > 0 ? (value.mistakes / value.analyses) * 100 : 0;
-    return {
-      category,
-      analyses: value.analyses,
-      mistakes: value.mistakes,
-      moneySaved: value.moneySaved,
-      interventionRate: rate,
-    };
-  });
-}
-
 function buildTrendRows(items: EnrichedIntervention[], period: TimePeriod): TrendRow[] {
   const granularity = getBucketGranularity(period);
   const aggregate = new Map<
@@ -402,7 +344,11 @@ export default function DashboardAnalyticsPage() {
   useDashboardUser();
 
   const [interventions, setInterventions] = useState<InterventionResponse[]>([]);
+  const [mistakeTypeRows, setMistakeTypeRows] = useState<CategoryRow[]>([]);
+  const [categoryRows, setCategoryRows] = useState<CategoryRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMistakes, setIsLoadingMistakes] = useState(true);
+  const [isLoadingCategories, setIsLoadingCategories] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [overviewPeriod, setOverviewPeriod] = useState<TimePeriod>("month");
   const [mistakesPeriod, setMistakesPeriod] = useState<TimePeriod>("month");
@@ -482,6 +428,108 @@ export default function DashboardAnalyticsPage() {
     };
   }, [router]);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadMistakeTypeCounts = async () => {
+      setIsLoadingMistakes(true);
+
+      try {
+        const lookbackDays = getLookbackDays(mistakesPeriod);
+        const response = await getInterventionMistakeTypes(
+          typeof lookbackDays === "number" ? { lookback_days: lookbackDays } : {},
+        );
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (response.status === 401) {
+          router.replace("/");
+          return;
+        }
+
+        if (!response.ok) {
+          setMistakeTypeRows([]);
+          setError((current) =>
+            current ?? toErrorMessage(response.data, "Unable to load mistake-type counts."),
+          );
+          return;
+        }
+
+        const payload = response.data as InterventionCompactCountResponse | string | null;
+        setMistakeTypeRows(parseCompactCountPayload(payload));
+      } catch {
+        if (!isMounted) {
+          return;
+        }
+        setMistakeTypeRows([]);
+        setError((current) => current ?? "Unable to reach the server.");
+      } finally {
+        if (isMounted) {
+          setIsLoadingMistakes(false);
+        }
+      }
+    };
+
+    void loadMistakeTypeCounts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [mistakesPeriod, router]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadCategoryCounts = async () => {
+      setIsLoadingCategories(true);
+
+      try {
+        const lookbackDays = getLookbackDays(moneyPeriod);
+        const response = await getInterventionCategories(
+          typeof lookbackDays === "number" ? { lookback_days: lookbackDays } : {},
+        );
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (response.status === 401) {
+          router.replace("/");
+          return;
+        }
+
+        if (!response.ok) {
+          setCategoryRows([]);
+          setError((current) =>
+            current ?? toErrorMessage(response.data, "Unable to load category counts."),
+          );
+          return;
+        }
+
+        const payload = response.data as InterventionCompactCountResponse | string | null;
+        setCategoryRows(parseCompactCountPayload(payload));
+      } catch {
+        if (!isMounted) {
+          return;
+        }
+        setCategoryRows([]);
+        setError((current) => current ?? "Unable to reach the server.");
+      } finally {
+        if (isMounted) {
+          setIsLoadingCategories(false);
+        }
+      }
+    };
+
+    void loadCategoryCounts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [moneyPeriod, router]);
+
   const enrichedInterventions = useMemo<EnrichedIntervention[]>(() => {
     return interventions.flatMap((item) => {
       const analyzedTimestamp = Date.parse(item.analyzed_at);
@@ -489,21 +537,13 @@ export default function DashboardAnalyticsPage() {
         return [];
       }
 
-      return [{ ...item, analyzedTimestamp, derivedCategory: deriveCategory(item) }];
+      return [{ ...item, analyzedTimestamp }];
     });
   }, [interventions]);
 
   const overviewData = useMemo(
     () => filterByPeriod(enrichedInterventions, overviewPeriod),
     [enrichedInterventions, overviewPeriod],
-  );
-  const mistakesData = useMemo(
-    () => filterByPeriod(enrichedInterventions, mistakesPeriod),
-    [enrichedInterventions, mistakesPeriod],
-  );
-  const moneyData = useMemo(
-    () => filterByPeriod(enrichedInterventions, moneyPeriod),
-    [enrichedInterventions, moneyPeriod],
   );
   const trendData = useMemo(
     () => filterByPeriod(enrichedInterventions, trendPeriod),
@@ -533,18 +573,12 @@ export default function DashboardAnalyticsPage() {
   }, [overviewData]);
 
   const categoryRowsForMistakes = useMemo(() => {
-    return buildCategoryRows(mistakesData)
-      .filter((row) => row.mistakes > 0)
-      .sort((rowA, rowB) => rowB.mistakes - rowA.mistakes)
-      .slice(0, 8);
-  }, [mistakesData]);
+    return mistakeTypeRows.slice(0, 8);
+  }, [mistakeTypeRows]);
 
   const categoryRowsForMoney = useMemo(() => {
-    return buildCategoryRows(moneyData)
-      .filter((row) => row.moneySaved > 0)
-      .sort((rowA, rowB) => rowB.moneySaved - rowA.moneySaved)
-      .slice(0, 8);
-  }, [moneyData]);
+    return categoryRows.slice(0, 8);
+  }, [categoryRows]);
 
   const trendRows = useMemo(() => buildTrendRows(trendData, trendPeriod), [trendData, trendPeriod]);
 
@@ -580,7 +614,7 @@ export default function DashboardAnalyticsPage() {
       },
       yaxis: {
         title: {
-          text: "Mistakes Prevented",
+          text: "Count",
           style: { color: "#57534e", fontSize: "12px", fontWeight: 600 },
         },
         labels: {
@@ -590,7 +624,7 @@ export default function DashboardAnalyticsPage() {
       },
       tooltip: {
         y: {
-          formatter: (value: number) => `${Math.round(value)} prevented`,
+          formatter: (value: number) => Math.round(value).toString(),
         },
       },
     }),
@@ -600,8 +634,8 @@ export default function DashboardAnalyticsPage() {
   const mistakesChartSeries = useMemo(
     () => [
       {
-        name: "Mistakes Prevented",
-        data: categoryRowsForMistakes.map((row) => row.mistakes),
+        name: "Mistake Count",
+        data: categoryRowsForMistakes.map((row) => Math.round(row.count)),
       },
     ],
     [categoryRowsForMistakes],
@@ -624,26 +658,32 @@ export default function DashboardAnalyticsPage() {
       plotOptions: {
         bar: {
           borderRadius: 8,
-          horizontal: true,
-          barHeight: "58%",
+          columnWidth: "55%",
+          distributed: true,
         },
       },
       legend: { show: false },
       xaxis: {
+        categories: categoryRowsForMoney.map((row) => row.category),
         labels: {
-          formatter: (value: number) => formatCompactCurrency(value),
-          style: { colors: "#57534e" },
+          rotate: -25,
+          trim: true,
+          style: { colors: "#57534e", fontSize: "12px" },
         },
       },
       yaxis: {
-        categories: categoryRowsForMoney.map((row) => row.category),
+        title: {
+          text: "Count",
+          style: { color: "#57534e", fontSize: "12px", fontWeight: 600 },
+        },
         labels: {
-          style: { colors: "#57534e", fontSize: "12px" },
+          formatter: (value: number) => Math.round(value).toString(),
+          style: { colors: "#57534e" },
         },
       },
       tooltip: {
         y: {
-          formatter: (value: number) => formatCurrency(value),
+          formatter: (value: number) => Math.round(value).toString(),
         },
       },
     }),
@@ -653,8 +693,8 @@ export default function DashboardAnalyticsPage() {
   const moneyChartSeries = useMemo(
     () => [
       {
-        name: "Money Saved",
-        data: categoryRowsForMoney.map((row) => Number(row.moneySaved.toFixed(2))),
+        name: "Category Count",
+        data: categoryRowsForMoney.map((row) => Math.round(row.count)),
       },
     ],
     [categoryRowsForMoney],
@@ -810,16 +850,16 @@ export default function DashboardAnalyticsPage() {
         <article className="border border-stone-200 bg-white p-5 md:p-6">
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-xl font-[450] tracking-tighter text-[#111]">Mistake count by category</h2>
+              <h2 className="text-xl font-[450] tracking-tighter text-[#111]">Mistake count by type</h2>
             </div>
             <PeriodSelector period={mistakesPeriod} onChange={setMistakesPeriod} />
           </div>
 
-          {isLoading ? <EmptyChart label="Loading category trends..." /> : null}
-          {!isLoading && categoryRowsForMistakes.length === 0 ? (
+          {isLoadingMistakes ? <EmptyChart label="Loading mistake type counts..." /> : null}
+          {!isLoadingMistakes && categoryRowsForMistakes.length === 0 ? (
             <EmptyChart label="No prevented mistakes in this period." />
           ) : null}
-          {!isLoading && categoryRowsForMistakes.length > 0 ? (
+          {!isLoadingMistakes && categoryRowsForMistakes.length > 0 ? (
             <ApexChart options={mistakesChartOptions} series={mistakesChartSeries} height={360} />
           ) : null}
         </article>
@@ -827,16 +867,16 @@ export default function DashboardAnalyticsPage() {
         <article className="border border-stone-200 bg-white p-5  md:p-6">
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-xl font-[450] tracking-tighter">Money saved by category</h2>
+              <h2 className="text-xl font-[450] tracking-tighter">Category count</h2>
             </div>
             <PeriodSelector period={moneyPeriod} onChange={setMoneyPeriod} />
           </div>
 
-          {isLoading ? <EmptyChart label="Loading savings breakdown..." /> : null}
-          {!isLoading && categoryRowsForMoney.length === 0 ? (
-            <EmptyChart label="No money-saved records in this period." />
+          {isLoadingCategories ? <EmptyChart label="Loading category counts..." /> : null}
+          {!isLoadingCategories && categoryRowsForMoney.length === 0 ? (
+            <EmptyChart label="No category counts in this period." />
           ) : null}
-          {!isLoading && categoryRowsForMoney.length > 0 ? (
+          {!isLoadingCategories && categoryRowsForMoney.length > 0 ? (
             <ApexChart options={moneyChartOptions} series={moneyChartSeries} height={360} />
           ) : null}
         </article>
@@ -861,26 +901,26 @@ export default function DashboardAnalyticsPage() {
 
       <section className="mt-4 grid gap-4 xl:grid-cols-3">
         <article className=" border border-stone-200 bg-white p-5">
-          <p className="text-xs font-[450] uppercase tracking-tighter text-stone-500 mb-8">Top risk category</p>
-          <p className="mt-2 text-xl font-[450] tracking-tighter]">
+          <p className="text-xs font-[450] uppercase tracking-tighter text-stone-500 mb-8">Top mistake type</p>
+          <p className="mt-2 text-xl font-[450] tracking-tighter">
             {topMistakeCategory ? topMistakeCategory.category : "No data"}
           </p>
           <p className="mt-2 text-sm text-stone-500">
             {topMistakeCategory
-              ? `${formatCount(topMistakeCategory.mistakes)} prevented mistakes (${formatPercentage(topMistakeCategory.interventionRate)} rate).`
+              ? `${formatCount(topMistakeCategory.count)} occurrences in the selected period.`
               : "No interventions were recorded for this period."}
           </p>
         </article>
 
         <article className=" border border-stone-200 bg-white p-5">
-          <p className="text-xs font-[450] uppercase tracking-tighter text-stone-500 mb-8">Top savings category</p>
+          <p className="text-xs font-[450] uppercase tracking-tighter text-stone-500 mb-8">Top category</p>
           <p className="mt-2 text-xl font-[450] tracking-tighter">
             {topSavingsCategory ? topSavingsCategory.category : "No data"}
           </p>
           <p className="mt-2 text-sm text-stone-500">
             {topSavingsCategory
-              ? `${formatCurrency(topSavingsCategory.moneySaved)} saved across ${formatCount(topSavingsCategory.analyses)} analyses.`
-              : "No money-saved records were found for this period."}
+              ? `${formatCount(topSavingsCategory.count)} occurrences in the selected period.`
+              : "No category counts were found for this period."}
           </p>
         </article>
 

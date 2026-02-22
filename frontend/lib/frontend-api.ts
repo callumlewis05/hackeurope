@@ -1,6 +1,7 @@
 import type {
   ApiValidationError,
   CalendarResponse,
+  InterventionCompactCountResponse,
   InterventionListResponse,
   InterventionResponse,
   InterventionStatsResponse,
@@ -93,6 +94,10 @@ interface ListInterventionsQuery {
   offset?: number;
 }
 
+interface CompactCountsQuery {
+  lookback_days?: number;
+}
+
 function toQueryString(params: ListInterventionsQuery = {}) {
   const query = new URLSearchParams();
 
@@ -116,6 +121,17 @@ function toQueryString(params: ListInterventionsQuery = {}) {
   return serializedQuery ? `?${serializedQuery}` : "";
 }
 
+function toCompactCountsQueryString(params: CompactCountsQuery = {}) {
+  const query = new URLSearchParams();
+
+  if (typeof params.lookback_days === "number") {
+    query.set("lookback_days", String(params.lookback_days));
+  }
+
+  const serializedQuery = query.toString();
+  return serializedQuery ? `?${serializedQuery}` : "";
+}
+
 export async function listInterventions(params: ListInterventionsQuery = {}) {
   return apiRequest<InterventionListResponse>(`/api/interventions${toQueryString(params)}`, {
     method: "GET",
@@ -132,6 +148,24 @@ export async function getIntervention(interventionId: string) {
   return apiRequest<InterventionResponse>(`/api/interventions/${encodeURIComponent(interventionId)}`, {
     method: "GET",
   });
+}
+
+export async function getInterventionCategories(params: CompactCountsQuery = {}) {
+  return apiRequest<InterventionCompactCountResponse>(
+    `/api/interventions/categories${toCompactCountsQueryString(params)}`,
+    {
+      method: "GET",
+    },
+  );
+}
+
+export async function getInterventionMistakeTypes(params: CompactCountsQuery = {}) {
+  return apiRequest<InterventionCompactCountResponse>(
+    `/api/interventions/mistake_types${toCompactCountsQueryString(params)}`,
+    {
+      method: "GET",
+    },
+  );
 }
 
 export async function getEmailStatus() {

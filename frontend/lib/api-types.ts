@@ -29,6 +29,8 @@ export interface InterventionResponse {
   domain: string;
   title: string;
   intent_type: string;
+  categories?: string[];
+  mistake_types?: string[];
   intent_data: Record<string, unknown>;
   risk_factors: string[];
   intervention_message: string;
@@ -47,6 +49,8 @@ export interface InterventionListResponse {
   limit: number;
   offset: number;
 }
+
+export type InterventionCompactCountResponse = Array<Record<string, number>>;
 
 export interface InterventionDomainStatsResponse {
   domain: string;

@@ -668,13 +668,13 @@ export default function DashboardAnalyticsPage() {
         animations: { easing: "easeinout", speed: 550 },
         fontFamily: "var(--font-inter), sans-serif",
       },
-      colors: [ACCENT_COLOR, "#111827", "#f97316"],
+      colors: [ACCENT_COLOR, "#f97316"],
       stroke: {
         curve: "smooth",
-        width: [3, 3, 2],
+        width: [3, 2],
       },
       fill: {
-        type: ["gradient", "solid", "solid"],
+        type: ["gradient", "solid"],
         gradient: {
           shadeIntensity: 0.7,
           opacityFrom: 0.28,
@@ -683,7 +683,7 @@ export default function DashboardAnalyticsPage() {
         },
       },
       markers: {
-        size: [4, 4, 3],
+        size: [4, 3],
         hover: {
           sizeOffset: 2,
         },
@@ -730,7 +730,6 @@ export default function DashboardAnalyticsPage() {
         intersect: false,
         y: [
           { formatter: (value: number) => formatCurrency(value) },
-          { formatter: (value: number) => formatCurrency(value) },
           { formatter: (value: number) => `${value.toFixed(1)}%` },
         ],
       },
@@ -748,11 +747,6 @@ export default function DashboardAnalyticsPage() {
         name: "Money Saved",
         type: "area" as const,
         data: trendRows.map((row) => Number(row.moneySaved.toFixed(2))),
-      },
-      {
-        name: "Net Value",
-        type: "line" as const,
-        data: trendRows.map((row) => Number(row.netValue.toFixed(2))),
       },
       {
         name: "Intervention Rate",
@@ -773,7 +767,7 @@ export default function DashboardAnalyticsPage() {
   }, null);
 
   return (
-    <main className="mx-auto w-full max-w-[1400px] px-4 pb-14 pt-10">
+    <main className="mx-auto w-full max-w-[1200px] px-4 pb-14 pt-10">
       <h1 className="text-4xl tracking-tighter text-[#111]">
         Analytics
       </h1>
@@ -788,14 +782,11 @@ export default function DashboardAnalyticsPage() {
           </p>
         ) : null}
 
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           <article className="bg-stone-100/75 p-5">
-            <p className="text-xs font-[450] uppercase tracking-tight mb-6">Net value</p>
+            <p className="text-xs font-[450] uppercase tracking-tight mb-6">Saved so far</p>
             <p className="mt-2 text-3xl font-[450] tracking-tighter">
               {formatCurrency(overviewTotals.netValue)}
-            </p>
-            <p className="mt-1 text-sm text-stone-400 font-[450] leading-tight">
-              Savings minus platform fees.
             </p>
           </article>
 
@@ -804,28 +795,12 @@ export default function DashboardAnalyticsPage() {
             <p className="mt-2 text-3xl font-[450] tracking-tighter">
               {formatCount(overviewTotals.interventionsCount)}
             </p>
-            <p className="mt-1 text-sm text-stone-400 font-[450] leading-tight">
-              {formatPercentage(overviewTotals.interventionRate)} intervention rate across {formatCount(overviewTotals.analyses)} analyses.
-            </p>
           </article>
 
           <article className="bg-stone-100/75 p-5">
             <p className="text-xs font-[450] uppercase tracking-tight mb-6">Avg saved / intervention</p>
             <p className="mt-2 text-3xl font-[450] tracking-tighter">
               {formatCurrency(overviewTotals.avgSavedPerIntervention)}
-            </p>
-            <p className="mt-1 text-sm text-stone-400 font-[450] leading-tight">
-              Mean value captured whenever a mistake is prevented.
-            </p>
-          </article>
-
-          <article className="bg-stone-100/75 p-5">
-            <p className="text-xs font-[450] uppercase tracking-tight mb-6">Savings efficiency</p>
-            <p className="mt-2 text-3xl font-[450] tracking-tighter ">
-              {overviewTotals.efficiencyRatio > 0 ? `${overviewTotals.efficiencyRatio.toFixed(1)}x` : "0.0x"}
-            </p>
-            <p className="mt-1 text-sm text-stone-400 font-[450] leading-tight">
-              Money saved per euro spent on platform fees.
             </p>
           </article>
         </div>
@@ -836,7 +811,6 @@ export default function DashboardAnalyticsPage() {
           <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <h2 className="text-xl font-[450] tracking-tighter text-[#111]">Mistake count by category</h2>
-
             </div>
             <PeriodSelector period={mistakesPeriod} onChange={setMistakesPeriod} />
           </div>

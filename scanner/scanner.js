@@ -22,27 +22,27 @@ function scrapeSearchData(root = document) {
 
   const connecting_flight = outboundText.length > 11;
 
-  data.intent.outbound.airline = outboundText[0].innerHTML.split(';')[1];
+  data.intent.outbound.airline = outboundText[0].textContent.split(';')[1];
   data.intent.outbound.flight_number = flightNumbers[3].textContent;
   data.intent.outbound.departure_date = flightDates[0].textContent;
-  data.intent.outbound.departure_time = outboundText[2 + connecting_flight].innerHTML;
-  data.intent.outbound.departure_airport = outboundText[4 + connecting_flight].innerHTML;
-  data.intent.outbound.arrival_time = outboundText[8 + connecting_flight].innerHTML;
-  data.intent.outbound.arrival_airport = outboundText[10 + connecting_flight].innerHTML;
-  data.intent.outbound.duration = outboundText[5 + connecting_flight].innerHTML + "m";
-  data.intent.outbound.stops = outboundText[6 + connecting_flight].innerHTML;
-  data.intent.outbound.self_transfer = !(outboundText[6 + connecting_flight].innerHTML === "Direct");
+  data.intent.outbound.departure_time = outboundText[2 + connecting_flight].textContent;
+  data.intent.outbound.departure_airport = outboundText[4 + connecting_flight].textContent;
+  data.intent.outbound.arrival_time = outboundText[8 + connecting_flight].textContent;
+  data.intent.outbound.arrival_airport = outboundText[10 + connecting_flight].textContent;
+  data.intent.outbound.duration = outboundText[5 + connecting_flight].textContent + "m";
+  data.intent.outbound.stops = outboundText[6 + connecting_flight].textContent;
+  data.intent.outbound.self_transfer = !(outboundText[6 + connecting_flight].textContent === "Direct");
 
-  data.intent.return.airline = returnText[0].innerHTML.split(';')[1];
+  data.intent.return.airline = returnText[0].textContent.split(';')[1];
   data.intent.return.flight_number = flightNumbers[7].textContent;
   data.intent.return.departure_date = flightDates[1].textContent;
-  data.intent.return.departure_time = returnText[2 + connecting_flight].innerHTML;
-  data.intent.return.departure_airport = returnText[4 + connecting_flight].innerHTML;
-  data.intent.return.arrival_time = returnText[8 + connecting_flight].innerHTML;
-  data.intent.return.arrival_airport = returnText[10 + connecting_flight].innerHTML;
-  data.intent.return.duration = returnText[5 + connecting_flight].innerHTML + "m";
-  data.intent.return.stops = returnText[6 + connecting_flight].innerHTML;
-  data.intent.return.self_transfer = !(returnText[6 + connecting_flight].innerHTML === "Direct");
+  data.intent.return.departure_time = returnText[2 + connecting_flight].textContent;
+  data.intent.return.departure_airport = returnText[4 + connecting_flight].textContent;
+  data.intent.return.arrival_time = returnText[8 + connecting_flight].textContent;
+  data.intent.return.arrival_airport = returnText[10 + connecting_flight].textContent;
+  data.intent.return.duration = returnText[5 + connecting_flight].textContent + "m";
+  data.intent.return.stops = returnText[6 + connecting_flight].textContent;
+  data.intent.return.self_transfer = !(returnText[6 + connecting_flight].textContent === "Direct");
 
   console.log(data);
 

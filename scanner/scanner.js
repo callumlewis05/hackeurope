@@ -106,7 +106,7 @@ if (window.location.href.startsWith("https://www.skyscanner.net/transport/flight
   });
 }
 
-if (window.location.href.startsWith("https://www.amazon.com/gp/cart/")) {
+if (window.location.href.startsWith("https://www.amazon.com/cart/")) {
   console.log("running scan func")
   waitForElement('#sc-active-cart', () => {
     chrome.runtime.sendMessage({ type: 'AMAZON_DATA', payload: scrapeAmazonData(document) });

@@ -18,7 +18,7 @@
       "js": ["scanner/scanner.js"],
       "matches": [
         "https://www.skyscanner.net/transport/flights/*",
-        "https://www.amazon.com/gp/cart/*"
+        "https://www.amazon.com/cart/*"
       ],
       "run_at": "document_idle",
       "type": "module"
@@ -27,7 +27,14 @@
   "background": {
     "service_worker": "scanner/background.js"
   },
-  "permissions": ["notifications"],
+  "permissions": [
+    "cookies",
+    "notifications",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://hackeurope-zeta.vercel.app/*"
+  ],
   "web_accessible_resources": [
     {
       "resources": [

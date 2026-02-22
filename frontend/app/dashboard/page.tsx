@@ -141,8 +141,8 @@ export default function DashboardPage() {
     () => stats?.total_interventions ?? interventions.filter((item) => item.was_intervened).length,
     [interventions, stats],
   );
-  const totalComputeCost = useMemo(
-    () => stats?.total_compute_cost ?? interventions.reduce((sum, item) => sum + item.compute_cost, 0),
+  const totalPlatformFees = useMemo(
+    () => stats?.total_platform_fees ?? interventions.reduce((sum, item) => sum + item.platform_fee, 0),
     [interventions, stats],
   );
   const statCards: StatCardProps[] = [
@@ -151,7 +151,7 @@ export default function DashboardPage() {
       value: formatCurrency(totalMoneySaved),
     },
     { label: "Interventions", value: formatCount(totalInterventions) },
-    { label: "Compute Cost", value: formatCurrency(totalComputeCost) },
+    { label: "Platform Fee", value: formatCurrency(totalPlatformFees) },
   ];
 
   const selectedEvent = useMemo(
@@ -305,10 +305,6 @@ export default function DashboardPage() {
               <div>
                 <dt className="text-stone-500">Money Saved</dt>
                 <dd className="font-medium text-[#111]">{formatCurrency(selectedEvent.money_saved)}</dd>
-              </div>
-              <div>
-                <dt className="text-stone-500">Compute Cost</dt>
-                <dd className="font-medium text-[#111]">{formatCurrency(selectedEvent.compute_cost)}</dd>
               </div>
               <div>
                 <dt className="text-stone-500">Platform Fee</dt>

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { FiSettings } from "react-icons/fi";
 
@@ -17,10 +17,13 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }>) {
   const router = useRouter();
+  const pathname = usePathname();
   const [user, setUser] = useState<UserProfileResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const displayName = getUserDisplayName(user);
+  const isAnalyticsPage = pathname === "/dashboard/analytics";
+  const isSettingsPage = pathname === "/dashboard/settings";
 
   useEffect(() => {
     let isMounted = true;
@@ -95,8 +98,15 @@ export default function DashboardLayout({
 
             <div className="flex h-full items-center gap-2">
               <Link
+                  href="/dashboard/analytics"
+                  className={`h-full flex items-center justify-center text-sm font-[500] px-3 transition-colors bg-stone-100 hover:bg-stone-200/60`}
+                  aria-label="Analytics"
+              >
+                Analytics
+              </Link>
+              <Link
                 href="/dashboard/settings"
-                className="bg-stone-100 h-full flex items-center justify-center aspect-square transition-colors hover:bg-stone-200/60"
+                className={"h-full flex items-center justify-center aspect-square transition-colors bg-stone-100 hover:bg-stone-200/60"}
                 aria-label="Settings"
               >
                 <FiSettings aria-hidden="true" size={18} />

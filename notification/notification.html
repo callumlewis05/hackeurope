@@ -2,6 +2,12 @@
   <div id="flight-alert-modal-box">
     <h2 id="modal-title"></h2>
     <p id="modal-message"></p>
-    <button id="modal-close">Close</button>
+    <div id="feedback">
+      <p>Was this check correct? Your feedback helps improve future checks.</p>
+      <button class="feedback-button" id="positive-feedback-button">Yes</button>
+      <button class="feedback-button" id="negative-feedback-button">No</button>
+    </div>
+    <button id="modal-close">&#10006;</button>
+    <script module="notification.js"></script>
   </div>
 </div>

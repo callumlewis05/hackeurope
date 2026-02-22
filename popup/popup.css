@@ -10,3 +10,8 @@
   font-size: 1rem;
   margin: 10px;
 }
+
+@font-face {
+  font-family: Inter;
+  src: url("Inter_18pt-Regular.ttf");
+}

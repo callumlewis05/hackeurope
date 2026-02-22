@@ -31,24 +31,18 @@ function scrapeSearchData(root = document) {
   data.intent.outbound.arrival_airport = outboundText[10 + connecting_flight].innerHTML;
   data.intent.outbound.duration = outboundText[5 + connecting_flight].innerHTML + "m";
   data.intent.outbound.stops = outboundText[6 + connecting_flight].innerHTML;
-  data.intent.outbound.self_transfer = (
-    outboundText[6 + connecting_flight].innerHTML === "Direct" 
-    ? false : outboundText[10 + connecting_flight]
-  );
+  data.intent.outbound.self_transfer = !(outboundText[6 + connecting_flight].innerHTML === "Direct");
 
   data.intent.return.airline = returnText[0].innerHTML.split(';')[1];
   data.intent.return.flight_number = flightNumbers[7].textContent;
   data.intent.return.departure_date = flightDates[1].textContent;
-  data.intent.return.departure_time = returnText[2].innerHTML;
-  data.intent.return.departure_airport = returnText[4].innerHTML;
-  data.intent.return.arrival_time = returnText[8].innerHTML;
-  data.intent.return.arrival_airport = returnText[10].innerHTML;
-  data.intent.return.duration = returnText[5].innerHTML + "m";
-  data.intent.return.stops = returnText[6].innerHTML;
-  data.intent.return.self_transfer = (
-    returnText[6].innerHTML === "Direct" 
-    ? false : returnText[10]
-  );
+  data.intent.return.departure_time = returnText[2 + connecting_flight].innerHTML;
+  data.intent.return.departure_airport = returnText[4 + connecting_flight].innerHTML;
+  data.intent.return.arrival_time = returnText[8 + connecting_flight].innerHTML;
+  data.intent.return.arrival_airport = returnText[10 + connecting_flight].innerHTML;
+  data.intent.return.duration = returnText[5 + connecting_flight].innerHTML + "m";
+  data.intent.return.stops = returnText[6 + connecting_flight].innerHTML;
+  data.intent.return.self_transfer = !(returnText[6 + connecting_flight].innerHTML === "Direct");
 
   console.log(data);
 
@@ -86,6 +80,10 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+function sendFeedback(feedback) {
+  console.log(`Sending ${feedback} feedback`);
+  chrome.runtime.sendMessage({ type: 'FEEDBACK', payload: {"feedback": feedback} });
+}
 
 async function showModal({ title, message }) {
   if (document.getElementById("flight-alert-modal-overlay")) return;
@@ -112,4 +110,6 @@ async function showModal({ title, message }) {
 
   // Close button
   overlay.querySelector("#modal-close").onclick = () => overlay.remove();
+  overlay.querySelector("#positive-feedback-button").onclick = () => {overlay.remove(); sendFeedback("positive")};
+  overlay.querySelector("#negative-feedback-button").onclick = () => {overlay.remove(); sendFeedback("negative")};
 }

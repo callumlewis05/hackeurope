@@ -2,6 +2,7 @@
 
 import operator
 from typing import Annotated, Any, Optional, TypedDict
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -39,6 +40,7 @@ class EconomicsDetail(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    id: UUID
     is_safe: bool
     intervention_message: Optional[str] = None
     risk_factors: list[str] = Field(default_factory=list)
@@ -135,6 +137,7 @@ class InterventionOut(BaseModel):
     risk_factors: list[str] = Field(default_factory=list)
     intervention_message: Optional[str] = None
     was_intervened: bool = False
+    feedback: bool = True
     compute_cost: Optional[float] = None
     money_saved: Optional[float] = None
     platform_fee: Optional[float] = None

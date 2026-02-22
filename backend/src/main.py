@@ -62,6 +62,7 @@ from src.schemas import (
     RefreshRequest,
     SignupRequest,
 )
+from src.supabase_client import sync_all_profiles, sync_profile_from_auth
 
 # ─────────────────────────────────────────────
 # Logging
@@ -214,8 +215,16 @@ async def get_current_user(
 ) -> dict[str, Any]:
     """FastAPI dependency that extracts the user from the Authorization header.
 
-    On every authenticated request we upsert the user into our local
-    profiles table so it stays in sync with Supabase Auth.
+    Sync strategy (in priority order):
+    1. **Supabase SDK** — ``sync_profile_from_auth`` fetches the canonical
+       user record from ``auth.users`` via the admin API and upserts it
+       into ``profiles``.  This guarantees ``profiles.id == auth.users.id``.
+    2. **JWT fallback** — if the SDK is unavailable (missing env vars,
+       network blip, etc.) we fall back to ``db.upsert_user`` with the
+       claims embedded in the JWT.  Less authoritative but still keeps
+       the profile table populated.
+    3. **Bare JWT** — if both DB writes fail the request still succeeds
+       (auth is valid) and we return the JWT data directly.
     """
     payload = _decode_token(credentials.credentials)
 
@@ -231,19 +240,55 @@ async def get_current_user(
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid user id in token.")
 
-    # Upsert into local DB so the profiles table stays in sync
-    db.upsert_user(
-        user_id=user_id,
-        email=email,
-        name=user_meta.get("full_name") or user_meta.get("name"),
-        avatar_url=user_meta.get("avatar_url"),
-    )
+    name = user_meta.get("full_name") or user_meta.get("name")
+    avatar_url = user_meta.get("avatar_url")
 
+    # ── 1. Primary path: sync from Supabase Auth via SDK ─────────
+    profile: dict[str, Any] | None = None
+    try:
+        profile = sync_profile_from_auth(user_id)
+    except Exception:
+        logger.exception(
+            "sync_profile_from_auth failed for user=%s — trying JWT fallback",
+            user_id,
+        )
+
+    # ── 2. Fallback: upsert from JWT claims ──────────────────────
+    if not profile or not profile.get("created_at"):
+        try:
+            profile = db.upsert_user(
+                user_id=user_id,
+                email=email,
+                name=name,
+                avatar_url=avatar_url,
+            )
+        except Exception:
+            logger.exception(
+                "JWT-fallback upsert_user also failed for user=%s", user_id
+            )
+            profile = None
+
+    # ── 3. Return profile or bare JWT data ───────────────────────
+    if profile and profile.get("created_at"):
+        return {
+            "id": user_id,
+            "email": profile.get("email", email),
+            "name": profile.get("name", name),
+            "avatar_url": profile.get("avatar_url", avatar_url),
+            "created_at": profile.get("created_at"),
+        }
+
+    logger.warning(
+        "Profile sync failed for user=%s email=%s — returning bare JWT data",
+        user_id,
+        email,
+    )
     return {
         "id": user_id,
         "email": email,
-        "name": user_meta.get("full_name") or user_meta.get("name"),
-        "avatar_url": user_meta.get("avatar_url"),
+        "name": name,
+        "avatar_url": avatar_url,
+        "created_at": None,
     }
 
 
@@ -273,6 +318,9 @@ async def signup(body: SignupRequest):
     Uses the admin API (service-role key) to create the user with
     email already confirmed, then immediately logs them in so the
     response contains usable access + refresh tokens.
+
+    Profile sync uses ``sync_profile_from_auth`` so the local row is
+    guaranteed to carry the correct auth UUID.
     """
     _ensure_supabase_configured()
 
@@ -332,17 +380,21 @@ async def signup(body: SignupRequest):
     # Prefer user object from login (has latest metadata)
     user_data = login_data.get("user") or user_data
 
-    # ── 3. Sync into local profiles table ────────────────────────
+    # ── 3. Sync into local profiles table via Supabase SDK ───────
     user_id_str = user_data.get("id") or ""
     if user_id_str:
         try:
-            user_meta = user_data.get("user_metadata", {})
-            db.upsert_user(
-                user_id=_uuid.UUID(user_id_str),
-                email=user_data.get("email", body.email),
-                name=user_meta.get("full_name") or body.name,
-                avatar_url=user_meta.get("avatar_url"),
-            )
+            uid = _uuid.UUID(user_id_str)
+            profile = sync_profile_from_auth(uid)
+            if not profile:
+                # SDK unavailable — fall back to direct upsert
+                user_meta = user_data.get("user_metadata", {})
+                db.upsert_user(
+                    user_id=uid,
+                    email=user_data.get("email", body.email),
+                    name=user_meta.get("full_name") or body.name,
+                    avatar_url=user_meta.get("avatar_url"),
+                )
         except Exception:
             logger.exception("Failed to sync signup user to profiles")
 
@@ -383,16 +435,20 @@ async def login(body: LoginRequest):
 
     user_data = data.get("user")
 
-    # Sync into local profiles table
+    # Sync into local profiles table via Supabase SDK
     if user_data:
         try:
-            user_meta = user_data.get("user_metadata", {})
-            db.upsert_user(
-                user_id=_uuid.UUID(user_data["id"]),
-                email=user_data.get("email", body.email),
-                name=user_meta.get("full_name") or user_meta.get("name"),
-                avatar_url=user_meta.get("avatar_url"),
-            )
+            uid = _uuid.UUID(user_data["id"])
+            profile = sync_profile_from_auth(uid)
+            if not profile:
+                # SDK unavailable — fall back to direct upsert
+                user_meta = user_data.get("user_metadata", {})
+                db.upsert_user(
+                    user_id=uid,
+                    email=user_data.get("email", body.email),
+                    name=user_meta.get("full_name") or user_meta.get("name"),
+                    avatar_url=user_meta.get("avatar_url"),
+                )
         except Exception:
             logger.exception("Failed to sync login user to profiles")
 
@@ -445,11 +501,19 @@ async def refresh_token(body: RefreshRequest):
 
 @app.get("/api/me", response_model=ProfileOut)
 async def me(user: CurrentUser):
-    """Return the authenticated user's profile."""
-    profile = db.get_user(user["id"])
-    if not profile:
-        raise HTTPException(status_code=404, detail="User not found.")
-    return profile
+    """Return the authenticated user's profile.
+
+    The profile is created/updated by the get_current_user dependency
+    (via db.upsert_user) so we can return the user dict directly —
+    no separate DB lookup needed.
+    """
+    return {
+        "id": str(user["id"]),
+        "email": user.get("email", ""),
+        "name": user.get("name"),
+        "avatar_url": user.get("avatar_url"),
+        "created_at": user.get("created_at"),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -533,6 +597,41 @@ async def get_intervention(intervention_id: _uuid.UUID, user: CurrentUser):
     if not record:
         raise HTTPException(status_code=404, detail="Intervention not found.")
     return record
+
+
+@app.put("/api/interventions/{intervention_id}/feedback", status_code=204)
+async def update_intervention_feedback_endpoint(
+    intervention_id: _uuid.UUID, body: dict[str, bool], user: CurrentUser
+):
+    """Update the feedback boolean for an intervention.
+
+    Expects a JSON body like: {"feedback": true}
+    Returns 204 No Content on success, 404 if the interaction is not found,
+    or 422 for invalid input.
+    """
+    # Validate body shape
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Request body must be a JSON object with a boolean 'feedback' field.",
+        )
+    feedback_val = body.get("feedback")
+    if not isinstance(feedback_val, bool):
+        raise HTTPException(
+            status_code=422,
+            detail="Request body must include a boolean 'feedback' field.",
+        )
+
+    # Attempt to update the interaction (scoped to the authenticated user)
+    ok = db.update_interaction_feedback(
+        user_id=user["id"], interaction_id=intervention_id, feedback=feedback_val
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=404, detail="Intervention not found or not owned by user."
+        )
+    # 204 No Content — return nothing
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -685,7 +784,71 @@ async def analyze_intent(req: IntentRequest, user: CurrentUser):
 
     risk_factors = final_state.get("risk_factors", [])
 
+    # The canonical interaction id must come from the server (DB).
+    # Prefer the id exposed by the storage node; if it's missing, attempt to
+    # persist the interaction now. If persistence fails or no id is returned,
+    # surface a clear 500 error so the client knows the operation did not
+    # complete successfully.
+    interaction_id = final_state.get("interaction_id")
+
+    if not interaction_id:
+        if user_id:
+            try:
+                store_res = db.store_interaction(
+                    user_id=user_id,
+                    domain=req.domain,
+                    intent=req.intent,
+                    risk_factors=risk_factors,
+                    intervention_message=final_state.get("intervention_message"),
+                    economics={
+                        "compute_cost": final_state.get("compute_cost"),
+                        "money_saved": final_state.get("money_saved"),
+                        "platform_fee": final_state.get("platform_fee"),
+                        "hour_of_day": final_state.get("hour_of_day"),
+                    },
+                    title=None,
+                )
+            except Exception:
+                logger.exception(
+                    "analyze_intent | store_interaction failed for user=%s", user_id
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to persist interaction to the server.",
+                )
+            if not store_res or not store_res.get("id"):
+                # DB did not return an id — treat as failure
+                logger.error(
+                    "analyze_intent | store_interaction returned no id user=%s res=%r",
+                    user_id,
+                    store_res,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to persist interaction to the server.",
+                )
+            interaction_id = store_res.get("id")
+        else:
+            # No authenticated user — cannot persist an interaction
+            logger.error("analyze_intent | no user_id available to persist interaction")
+            raise HTTPException(
+                status_code=500,
+                detail="No user_id available; cannot persist interaction.",
+            )
+
+    # Coerce the DB-provided id into a UUID object for the response schema.
+    try:
+        id_val = _uuid.UUID(interaction_id)
+    except Exception:
+        logger.exception(
+            "analyze_intent | invalid interaction id from DB: %r", interaction_id
+        )
+        raise HTTPException(
+            status_code=500, detail="Invalid interaction id returned by the server."
+        )
+
     return AgentResponse(
+        id=id_val,
         is_safe=len(risk_factors) == 0,
         intervention_message=final_state.get("intervention_message"),
         risk_factors=risk_factors,
@@ -696,3 +859,24 @@ async def analyze_intent(req: IntentRequest, user: CurrentUser):
             platform_fee=final_state.get("platform_fee"),
         ),
     )
+
+
+# ─────────────────────────────────────────────
+# Routes — Admin
+# ─────────────────────────────────────────────
+
+
+@app.post("/api/admin/sync-profiles")
+async def admin_sync_profiles(user: CurrentUser):
+    """Bulk-sync every Supabase Auth user into the local profiles table.
+
+    This is an admin-only endpoint useful for:
+    - One-off migration to reconcile auth ↔ profiles UUID mismatches.
+    - Periodic reconciliation to catch any drift.
+
+    Requires a valid authenticated session (any logged-in user can
+    trigger it for now — restrict to admin roles in production).
+    """
+    logger.info("admin_sync_profiles triggered by user=%s", user["id"])
+    result = sync_all_profiles()
+    return result

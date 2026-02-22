@@ -317,7 +317,8 @@ class FlightDomainHandler(DomainHandler):
 **Their calendar events for ±3 days around each flight leg (includes location where available):**
 {calendar_events}
 
-**Their existing flight bookings and travel history:**
+**Their existing flight bookings, travel history, AND purchase receipts
+(includes hotel bookings, car hire, event tickets, etc.):**
 {bank_transactions}
 
 Analyse the above data and look for ALL of the following risk categories:
@@ -333,7 +334,19 @@ Analyse the above data and look for ALL of the following risk categories:
 2. **Double booking** – The user already has a flight booked to the same
    destination around the same dates, or overlapping travel dates.
 
-3. **Fatigue / exhaustion risk** – Consider the full travel timeline:
+3. **Hotel / accommodation clash** – The user has a hotel or
+   accommodation booking whose check-in/check-out dates conflict with
+   this flight.  Examples:
+   - A return flight that departs BEFORE the hotel check-out date
+     (the user would leave early and waste paid nights).
+   - An outbound flight that arrives AFTER the hotel check-in date
+     (the user would miss the first night).
+   - Any flight that means the user cannot physically be at the hotel
+     during the booked stay.
+   If the hotel is already paid, flag the wasted money explicitly
+   (mention the hotel name, dates, and amount paid).
+
+4. **Fatigue / exhaustion risk** – Consider the full travel timeline:
    • Outbound departs {dep_date} at {dep_time}, arrives {arr_time}
    • Return departs {ret_date} at {ret_dep_time}, arrives {ret_arr_time}
    Will the user be exhausted? Examples:
@@ -341,15 +354,17 @@ Analyse the above data and look for ALL of the following risk categories:
    - A red-eye flight followed by a work commitment
    - Very short turnaround between arriving home and the next obligation
 
-4. **Too-early / too-late flight** – Flag if any flight:
+5. **Too-early / too-late flight** – Flag if any flight:
    • Departs before 06:00 (very early, sleep disruption)
    • Arrives after 23:00 (very late, safety and fatigue concern)
    • Departs within 2 hours of the user waking up for an early event
 
-5. **Wasted money** – An existing transaction showing they already paid
+6. **Wasted money** – An existing transaction showing they already paid
    for a similar trip that covers the same or overlapping period.
+   This includes hotel bookings, flights, or other travel expenses
+   that would be partially or fully wasted by this new booking.
 
-6. **Self-transfer warning** – If any leg in the intent has
+7. **Self-transfer warning** – If any leg in the intent has
    `"self_transfer": true`, the passenger must collect their luggage,
    go through security again, and re-check in at the connecting
    airport.  This is stressful, risky for tight connections, and

@@ -18,7 +18,7 @@ from typing import Any, Generator, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
-from sqlalchemy import Column, ForeignKey, Index, Text, func, text
+from sqlalchemy import Column, ForeignKey, Index, Text, func, text  # noqa: F401
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlmodel import Field, Session, SQLModel, create_engine, or_, select
@@ -227,6 +227,7 @@ class Interaction(SQLModel, table=True):
     )
     intervention_message: Optional[str] = None
     was_intervened: bool = False
+    feedback: bool = True
     compute_cost: Optional[float] = None
     money_saved: Optional[float] = None
     platform_fee: Optional[float] = None
@@ -619,6 +620,7 @@ def store_interaction(
     intervention_message: str | None,
     economics: dict[str, Any],
     title: str | None = None,
+    feedback: bool = True,
 ) -> dict[str, Any] | None:
     """Log one analysis run into the interactions table."""
     uid = _to_uuid(user_id)
@@ -633,6 +635,7 @@ def store_interaction(
                 risk_factors=risk_factors,
                 intervention_message=intervention_message,
                 was_intervened=bool(intervention_message),
+                feedback=feedback,
                 compute_cost=economics.get("compute_cost"),
                 money_saved=economics.get("money_saved"),
                 platform_fee=economics.get("platform_fee"),
@@ -665,6 +668,7 @@ def _interaction_to_dict(row: Interaction) -> dict[str, Any]:
         "risk_factors": row.risk_factors or [],
         "intervention_message": row.intervention_message,
         "was_intervened": row.was_intervened,
+        "feedback": row.feedback,
         "compute_cost": row.compute_cost,
         "money_saved": row.money_saved,
         "platform_fee": row.platform_fee,
@@ -727,6 +731,46 @@ def get_interaction(
             "get_interaction failed user=%s id=%s", user_id, interaction_id
         )
         return None
+
+
+def update_interaction_feedback(
+    user_id: str | _uuid.UUID, interaction_id: str | _uuid.UUID, feedback: bool
+) -> bool:
+    """Update the feedback boolean for a single interaction, scoped to the user.
+
+    Returns True on success, False if the interaction was not found or an error occurred.
+    """
+    uid = _to_uuid(user_id)
+    try:
+        with get_session() as session:
+            # Ensure we use a UUID instance for lookup
+            iid = _to_uuid(interaction_id)
+            row = session.get(Interaction, iid)
+            if not row or row.user_id != uid:
+                logger.info(
+                    "update_interaction_feedback: no such interaction or wrong user user=%s id=%s",
+                    user_id,
+                    interaction_id,
+                )
+                return False
+
+            # Update the feedback flag and persist
+            row.feedback = bool(feedback)
+            session.add(row)
+            session.flush()
+
+            logger.info(
+                "Updated interaction feedback user=%s interaction=%s feedback=%s",
+                user_id,
+                interaction_id,
+                row.feedback,
+            )
+            return True
+    except Exception:
+        logger.exception(
+            "update_interaction_feedback failed user=%s id=%s", user_id, interaction_id
+        )
+        return False
 
 
 def get_interaction_stats(user_id: _uuid.UUID) -> dict[str, Any]:
@@ -794,54 +838,110 @@ def upsert_user(
     name: str | None = None,
     avatar_url: str | None = None,
 ) -> dict[str, Any]:
-    """Create profile if it doesn't exist, or update name/avatar if it does.
+    """Create or update a profile so ``profiles.id == auth.users.id``.
 
-    Called on every authenticated request so the local profiles table
-    stays in sync with Supabase Auth.
+    Handles three cases:
+    1. **Profile exists with matching id** → update name/avatar.
+    2. **No profile with this id, but one exists with the same email**
+       (UUID mismatch from earlier bugs) → re-ID the existing row to
+       use the canonical auth UUID, updating FKs in child tables inside
+       the same transaction.
+    3. **No profile at all** → insert a new row keyed by the auth UUID.
+
+    Raises on DB errors so callers can decide how to handle failures
+    (instead of silently swallowing them).
     """
-    try:
-        with get_session() as session:
+    with get_session() as session:
+        # ── Case 1: profile already keyed by the auth UUID ───────
+        profile = session.get(Profile, user_id)
+        if profile:
+            if name is not None:
+                profile.name = name
+            if avatar_url is not None:
+                profile.avatar_url = avatar_url
+            # Keep email in sync with auth (it may have changed)
+            if email:
+                profile.email = email
+            session.add(profile)
+            session.flush()
+            return _profile_to_dict(profile)
+
+        # ── Case 2: email collision — profile exists under a stale UUID
+        stmt = select(Profile).where(Profile.email == email)
+        existing = session.exec(stmt).first()
+
+        if existing:
+            old_id = existing.id
+            logger.warning(
+                "upsert_user: re-IDing profile %s → %s (email=%s)",
+                old_id,
+                user_id,
+                email,
+            )
+            # Migrate child-table FKs from old_id → user_id.
+            # Done via raw UPDATE so we don't have to load every row.
+            _child_tables = [
+                "email_connections",
+                "user_calendars",
+                "flight_bookings",
+                "purchases",
+                "interactions",
+            ]
+            for tbl in _child_tables:
+                session.execute(
+                    text(
+                        f"UPDATE {tbl} SET user_id = :new WHERE user_id = :old"
+                    ).bindparams(new=user_id, old=old_id)
+                )
+
+            # Now update the profile row itself
+            session.execute(
+                text(
+                    "UPDATE profiles SET id = :new_id, email = :email, "
+                    "name = COALESCE(:name, name), "
+                    "avatar_url = COALESCE(:avatar, avatar_url) "
+                    "WHERE id = :old_id"
+                ).bindparams(
+                    new_id=user_id,
+                    email=email,
+                    name=name,
+                    avatar=avatar_url,
+                    old_id=old_id,
+                )
+            )
+            session.flush()
+
+            # Re-fetch to return consistent data
             profile = session.get(Profile, user_id)
             if profile:
-                if name is not None:
-                    profile.name = name
-                if avatar_url is not None:
-                    profile.avatar_url = avatar_url
-                session.add(profile)
-            else:
-                profile = Profile(
-                    id=user_id, email=email, name=name, avatar_url=avatar_url
-                )
-                session.add(profile)
-            session.flush()
-            return {
-                "id": str(profile.id),
-                "email": profile.email,
-                "name": profile.name,
-                "avatar_url": profile.avatar_url,
-                "created_at": str(profile.created_at),
-            }
-    except Exception:
-        logger.exception("upsert_user failed id=%s email=%s", user_id, email)
-        return {"id": str(user_id), "email": email}
+                return _profile_to_dict(profile)
+            # Shouldn't happen, but guard against it
+            logger.error("upsert_user: profile disappeared after re-ID %s", user_id)
+
+        # ── Case 3: brand-new user ──────────────────────────────
+        profile = Profile(id=user_id, email=email, name=name, avatar_url=avatar_url)
+        session.add(profile)
+        session.flush()
+        return _profile_to_dict(profile)
 
 
 def get_user(user_id: _uuid.UUID) -> dict[str, Any] | None:
-    try:
-        with get_session() as session:
-            profile = session.get(Profile, user_id)
-            if not profile:
-                return None
-            return {
-                "id": str(profile.id),
-                "email": profile.email,
-                "name": profile.name,
-                "avatar_url": profile.avatar_url,
-                "created_at": str(profile.created_at),
-            }
-    except Exception:
-        logger.exception("get_user failed id=%s", user_id)
-        return None
+    """Fetch a profile by its primary key. Returns None when not found."""
+    with get_session() as session:
+        profile = session.get(Profile, user_id)
+        if not profile:
+            return None
+        return _profile_to_dict(profile)
+
+
+def _profile_to_dict(p: Profile) -> dict[str, Any]:
+    return {
+        "id": str(p.id),
+        "email": p.email,
+        "name": p.name,
+        "avatar_url": p.avatar_url,
+        "created_at": str(p.created_at) if p.created_at else None,
+    }
 
 
 # ═════════════════════════════════════════════

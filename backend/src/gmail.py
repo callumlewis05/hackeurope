@@ -118,8 +118,18 @@ async def resolve_email_address(access_token: str) -> str | None:
 # ─────────────────────────────────────────────
 
 
-async def _get_valid_token(user_id: str) -> str | None:
-    """Retrieve the access token for a user, refreshing if expired."""
+async def _get_valid_token(user_id: str) -> dict[str, Any] | None:
+    """Retrieve the access token for a user, refreshing if expired.
+
+    Returns a dict with metadata:
+      {
+        "access_token": str | None,
+        "has_refresh_token": bool,
+        "token_refreshed": bool,
+        "refresh_failed": bool
+      }
+    Returns None when there is no email connection.
+    """
     uid = _uuid.UUID(user_id)
     conn = db.get_email_connection_raw(uid)
     if not conn:
@@ -127,34 +137,53 @@ async def _get_valid_token(user_id: str) -> str | None:
 
     access_token = conn.get("access_token")
     expires_at = conn.get("token_expires_at")
+    has_refresh = bool(conn.get("refresh_token"))
 
-    # If we have an expiry and it's still valid, use it
+    # If we have an expiry and it's still valid, return current token
     if (
         expires_at
         and isinstance(expires_at, datetime)
         and expires_at > datetime.utcnow()
     ):
-        return access_token
+        return {
+            "access_token": access_token,
+            "has_refresh_token": has_refresh,
+            "token_refreshed": False,
+            "refresh_failed": False,
+        }
 
     # Otherwise try to refresh
     refresh_tok = conn.get("refresh_token")
     if not refresh_tok:
-        # No refresh token — try the current access token anyway
-        return access_token
+        # No refresh token — return existing token (may be expired) and flag absence
+        return {
+            "access_token": access_token,
+            "has_refresh_token": False,
+            "token_refreshed": False,
+            "refresh_failed": False,
+        }
 
     result = await refresh_access_token(refresh_tok)
     if not result:
-        # Refresh failed — try the existing token (might still work)
-        logger.warning(
-            "Token refresh failed for user=%s, trying existing token", user_id
-        )
-        return access_token
+        # Refresh failed — return existing token and mark failure for observability
+        logger.warning("Token refresh failed for user=%s", user_id)
+        return {
+            "access_token": access_token,
+            "has_refresh_token": True,
+            "token_refreshed": False,
+            "refresh_failed": True,
+        }
 
     new_token = result["access_token"]
     new_expires = datetime.utcnow() + timedelta(seconds=result.get("expires_in", 3600))
     db.update_email_token(uid, new_token, new_expires)
 
-    return new_token
+    return {
+        "access_token": new_token,
+        "has_refresh_token": True,
+        "token_refreshed": True,
+        "refresh_failed": False,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -391,9 +420,19 @@ async def fetch_email_receipts(
     Returns a list of dicts with keys: merchant, item, amount, currency, date, source.
     Returns an empty list if the user has no email connection or on any error.
     """
-    token = await _get_valid_token(user_id)
-    if not token:
-        logger.info("fetch_email_receipts | user=%s | no email connection", user_id)
+    token_info = await _get_valid_token(user_id)
+    access_token = token_info.get("access_token") if token_info else None
+
+    if not access_token:
+        if token_info is None:
+            logger.info("fetch_email_receipts | user=%s | no email connection", user_id)
+        else:
+            logger.warning(
+                "fetch_email_receipts | user=%s | no valid access token (refresh_failed=%s, has_refresh_token=%s)",
+                user_id,
+                token_info.get("refresh_failed"),
+                token_info.get("has_refresh_token"),
+            )
         return []
 
     # Build date-bounded query
@@ -402,7 +441,7 @@ async def fetch_email_receipts(
     )
     query = f"{_RECEIPT_QUERY} after:{after_date}"
 
-    summaries = await _fetch_message_summaries(token, query)
+    summaries = await _fetch_message_summaries(access_token, query)
     if not summaries:
         logger.info("fetch_email_receipts | user=%s | no emails found", user_id)
         return []
@@ -427,9 +466,19 @@ async def fetch_email_flights(
     arrival_airport, departure_date, price_amount, price_currency, booking_reference, source.
     Returns an empty list if the user has no email connection or on any error.
     """
-    token = await _get_valid_token(user_id)
-    if not token:
-        logger.info("fetch_email_flights | user=%s | no email connection", user_id)
+    token_info = await _get_valid_token(user_id)
+    access_token = token_info.get("access_token") if token_info else None
+
+    if not access_token:
+        if token_info is None:
+            logger.info("fetch_email_flights | user=%s | no email connection", user_id)
+        else:
+            logger.warning(
+                "fetch_email_flights | user=%s | no valid access token (refresh_failed=%s, has_refresh_token=%s)",
+                user_id,
+                token_info.get("refresh_failed"),
+                token_info.get("has_refresh_token"),
+            )
         return []
 
     after_date = (datetime.utcnow() - timedelta(days=lookback_days)).strftime(
@@ -437,7 +486,7 @@ async def fetch_email_flights(
     )
     query = f"{_FLIGHT_QUERY} after:{after_date}"
 
-    summaries = await _fetch_message_summaries(token, query)
+    summaries = await _fetch_message_summaries(access_token, query)
     if not summaries:
         logger.info("fetch_email_flights | user=%s | no emails found", user_id)
         return []

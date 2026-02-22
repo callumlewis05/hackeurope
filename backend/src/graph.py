@@ -10,6 +10,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -147,45 +148,175 @@ def _is_shopping_domain(domain: str) -> bool:
 
 async def calendar_fetcher_node(state: AgentState) -> dict:
     handler = get_domain_handler(state["domain"])
-    events = handler.fetch_calendar(state["intent"])
+    # Handler.fetch_calendar may be blocking (sync). Run in a thread to avoid blocking the event loop.
+    try:
+        events = await asyncio.to_thread(handler.fetch_calendar, state["intent"])
+    except Exception:
+        logger.exception(
+            "calendar_fetcher | handler.fetch_calendar failed domain=%s user=%s",
+            state.get("domain"),
+            state.get("user_id"),
+        )
+        events = []
+    # Normalise to list
+    events = events or []
     logger.info("calendar_fetcher | events=%d", len(events))
-    return {"calendar_events": events}
+
+    # Provide a small context_meta that downstream nodes (and the audit prompt)
+    # can use to understand whether calendar data was available.
+    context_meta = {"calendar": {"present": bool(events), "count": len(events)}}
+    return {"calendar_events": events, "context_meta": context_meta}
 
 
 async def bank_fetcher_node(state: AgentState) -> dict:
     """Fetch bank/transaction data from DB + merge Gmail email data.
 
-    For flight domains: merges flight booking confirmations from Gmail.
+    For flight domains: merges flight booking confirmations AND purchase
+    receipts (hotel bookings, car hire, etc.) so the audit can detect
+    clashes between flights and accommodation.
     For shopping domains: merges purchase receipts from Gmail.
     For all domains: the handler's own DB-based fetch_bank runs first.
+
+    This node now:
+      - Runs handler.fetch_bank in a thread to avoid blocking the event loop.
+      - Tags gmail-extracted records with provenance (`source`, `source_id`).
+      - Deduplicates merged records by (source, source_id) when available,
+        and falls back to simple (merchant/airline, amount, date) heuristics.
+      - Emits a small `context_meta` object describing counts.
     """
     handler = get_domain_handler(state["domain"])
-    txns = handler.fetch_bank(state["intent"])
 
-    # Merge Gmail data based on domain type
+    # Run potentially blocking DB fetch in thread
+    try:
+        txns = await asyncio.to_thread(handler.fetch_bank, state["intent"])
+    except Exception:
+        logger.exception(
+            "bank_fetcher | handler.fetch_bank failed domain=%s user=%s",
+            state.get("domain"),
+            state.get("user_id"),
+        )
+        txns = []
+
+    txns = txns or []
+    original_db_count = len(txns)
+
+    # Merge Gmail data with provenance tagging
     user_id = state.get("user_id", "")
-    if user_id:
-        try:
+    merged_gmail_flights = []
+    merged_gmail_receipts = []
+    try:
+        if user_id:
             if _is_flight_domain(state["domain"]):
                 email_flights = await gmail.fetch_email_flights(
                     user_id, lookback_days=180
                 )
+                email_flights = email_flights or []
                 if email_flights:
                     logger.info("bank_fetcher | gmail flights=%d", len(email_flights))
-                    txns.extend(email_flights)
-            else:
-                # For shopping and other domains, pull purchase receipts
+                # Tag provenance
+                for idx, item in enumerate(email_flights):
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("source", "gmail")
+                    # Prefer any explicit gmail id / booking_reference; fallback to derived id
+                    sid = (
+                        item.get("gmail_id")
+                        or item.get("booking_reference")
+                        or item.get("id")
+                        or f"gmail_flight_{idx}"
+                    )
+                    item["source_id"] = sid
+                    merged_gmail_flights.append(item)
+
                 email_receipts = await gmail.fetch_email_receipts(
                     user_id, lookback_days=90
                 )
+                email_receipts = email_receipts or []
+                if email_receipts:
+                    logger.info(
+                        "bank_fetcher | gmail receipts (hotel/other)=%d",
+                        len(email_receipts),
+                    )
+                for idx, item in enumerate(email_receipts):
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("source", "gmail")
+                    sid = (
+                        item.get("gmail_id") or item.get("id") or f"gmail_receipt_{idx}"
+                    )
+                    item["source_id"] = sid
+                    merged_gmail_receipts.append(item)
+            else:
+                email_receipts = await gmail.fetch_email_receipts(
+                    user_id, lookback_days=90
+                )
+                email_receipts = email_receipts or []
                 if email_receipts:
                     logger.info("bank_fetcher | gmail receipts=%d", len(email_receipts))
-                    txns.extend(email_receipts)
-        except Exception:
-            logger.exception("bank_fetcher | gmail merge failed user=%s", user_id)
+                for idx, item in enumerate(email_receipts):
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("source", "gmail")
+                    sid = (
+                        item.get("gmail_id") or item.get("id") or f"gmail_receipt_{idx}"
+                    )
+                    item["source_id"] = sid
+                    merged_gmail_receipts.append(item)
+    except Exception:
+        logger.exception("bank_fetcher | gmail merge failed user=%s", user_id)
 
-    logger.info("bank_fetcher | total transactions=%d", len(txns))
-    return {"bank_transactions": txns}
+    # Extend txns with Gmail items (but we'll dedupe below)
+    txns.extend(merged_gmail_flights)
+    txns.extend(merged_gmail_receipts)
+
+    # Deduplicate: prefer explicit (source, source_id). Fallback to (merchant/airline, amount, date).
+    seen_keys: set = set()
+    deduped: list[dict] = []
+    for item in txns:
+        if not isinstance(item, dict):
+            continue
+        src = item.get("source")
+        sid = item.get("source_id")
+        if src and sid:
+            key = (src, str(sid))
+        else:
+            # Fallback heuristic keys
+            merchant = (
+                str(item.get("merchant") or item.get("airline") or "").strip().lower()
+            )
+            amount = str(
+                item.get("amount")
+                or item.get("price_amount")
+                or item.get("price")
+                or ""
+            )
+            date = str(item.get("date") or item.get("departure_date") or "")
+            key = (merchant, amount, date)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(item)
+
+    logger.info(
+        "bank_fetcher | db=%d gmail_flights=%d gmail_receipts=%d total_after_merge=%d",
+        original_db_count,
+        len(merged_gmail_flights),
+        len(merged_gmail_receipts),
+        len(deduped),
+    )
+
+    context_meta = {
+        "bank": {
+            "db_count": original_db_count,
+            "gmail_merged": {
+                "flights": len(merged_gmail_flights),
+                "receipts": len(merged_gmail_receipts),
+            },
+            "total_after_merge": len(deduped),
+        }
+    }
+
+    return {"bank_transactions": deduped, "context_meta": context_meta}
 
 
 async def purchase_history_fetcher_node(state: AgentState) -> dict:
@@ -207,15 +338,84 @@ async def purchase_history_fetcher_node(state: AgentState) -> dict:
 
 
 async def audit_node(state: AgentState) -> dict:
-    """Cross-reference intent vs context via LLM."""
+    """Cross-reference intent vs context via LLM.
+
+    We also include a small, explicit context metadata block at the top of the
+    prompt so the LLM knows when data sources were unavailable vs simply empty.
+    """
     handler = get_domain_handler(state["domain"])
 
-    prompt = handler.build_audit_prompt(
-        intent=state["intent"],
-        calendar_events=state.get("calendar_events", []),
-        bank_transactions=state.get("bank_transactions", []),
-        purchase_history=state.get("purchase_history", []),
+    # Build a lightweight context_meta summary from available state fields.
+    # Keep it simple and ensure variables are always bound.
+    calendar_events = state.get("calendar_events", []) or []
+    bank_transactions = state.get("bank_transactions", []) or []
+    purchase_history = state.get("purchase_history", []) or []
+
+    # Merge context meta from multiple possible sources:
+    #  - a top-level `context_meta` returned by fetchers (preferred)
+    #  - legacy per-node meta keys like `purchase_history_meta`, `calendar_meta`, `bank_meta`
+    context_meta: dict[str, Any] = {}
+
+    top_cm = state.get("context_meta")
+    if isinstance(top_cm, dict):
+        # top-level context_meta may contain nested keys like 'calendar' or 'bank'
+        context_meta.update(top_cm)
+
+    # Merge purchase_history_meta if present (backwards compatibility)
+    phm = state.get("purchase_history_meta")
+    if isinstance(phm, dict):
+        # ensure nested shape
+        context_meta.setdefault("purchase_history", {})
+        if "count" in phm:
+            context_meta["purchase_history"]["count"] = phm.get("count", 0)
+            context_meta["purchase_history"]["present"] = phm.get("count", 0) > 0
+
+    # Merge calendar_meta if present
+    cmeta = state.get("calendar_meta")
+    if isinstance(cmeta, dict):
+        context_meta.setdefault("calendar", {})
+        if "count" in cmeta:
+            context_meta["calendar"]["count"] = cmeta.get("count", 0)
+            context_meta["calendar"]["present"] = cmeta.get("count", 0) > 0
+
+    # Merge bank_meta if present
+    bmeta = state.get("bank_meta")
+    if isinstance(bmeta, dict):
+        context_meta.setdefault("bank", {})
+        # bank_meta may use different keys (db_count / total_count)
+        if "total_count" in bmeta:
+            context_meta["bank"]["count"] = bmeta.get("total_count", 0)
+            context_meta["bank"]["present"] = bmeta.get("total_count", 0) > 0
+        elif "db_count" in bmeta:
+            context_meta["bank"]["count"] = bmeta.get("db_count", 0)
+            context_meta["bank"]["present"] = bmeta.get("db_count", 0) > 0
+        else:
+            # fallback to presence of bank_transactions
+            context_meta["bank"]["count"] = len(bank_transactions)
+            context_meta["bank"]["present"] = bool(bank_transactions)
+
+    # Ensure defaults if nothing provided by fetchers
+    context_meta.setdefault(
+        "calendar", {"present": bool(calendar_events), "count": len(calendar_events)}
     )
+    context_meta.setdefault(
+        "bank", {"present": bool(bank_transactions), "count": len(bank_transactions)}
+    )
+    context_meta.setdefault(
+        "purchase_history",
+        {"present": bool(purchase_history), "count": len(purchase_history)},
+    )
+
+    # Prepend context metadata to the prompt so the model can reason about missing data.
+    base_prompt = handler.build_audit_prompt(
+        intent=state["intent"],
+        calendar_events=calendar_events,
+        bank_transactions=bank_transactions,
+        purchase_history=purchase_history,
+    )
+
+    meta_header = "Context metadata: " + json.dumps(context_meta) + "\n\n"
+    prompt = meta_header + base_prompt
 
     response = await llm.ainvoke(prompt)
     text = _extract_text(response.content)
@@ -284,22 +484,23 @@ def economics_node(state: AgentState) -> dict:
 
 
 async def storage_node(state: AgentState) -> dict:
-    """Persist domain-specific record + interaction audit trail."""
+    """Persist domain-specific record + interaction audit trail.
+
+    NOTE: domain-specific record storage (flights/purchases) is opt-in.
+    By default the agent will persist the interaction audit trail but it will
+    NOT write domain rows unless the calling context sets
+    `state['store_domain_records'] = True`. This keeps tentative LLM detections
+    out of the user's permanent records unless explicitly allowed (e.g. the
+    frontend chooses to persist them or they are confirmed via email receipts).
+    """
     user_id = state.get("user_id", "")
     domain = state.get("domain", "")
     intent = state.get("intent", {})
 
     handler = get_domain_handler(domain)
 
-    # 1. Domain-specific (flights → flight_bookings, shopping → purchases)
-    if user_id:
-        try:
-            rows = handler.store(user_id, intent, domain)
-            logger.info("storage | domain rows=%d | user=%s", len(rows), user_id)
-        except Exception:
-            logger.exception("storage | domain store failed user=%s", user_id)
-
-    # 2. Interaction audit trail
+    # 1. Interaction audit trail — persist this first so we can provide an
+    # interaction_id as provenance to any domain rows if the caller opts in.
     economics = {
         "compute_cost": state.get("compute_cost"),
         "money_saved": state.get("money_saved"),
@@ -307,9 +508,14 @@ async def storage_node(state: AgentState) -> dict:
         "hour_of_day": state.get("hour_of_day"),
     }
 
+    interaction_id: str | None = None
+    persisted = False
+
     if user_id:
         try:
-            db.store_interaction(
+            # Persist the interaction and capture the DB-generated id. The DB
+            # helper returns {"id": "<uuid>"} on success or None on failure.
+            result = db.store_interaction(
                 user_id=user_id,
                 domain=domain,
                 intent=intent,
@@ -318,12 +524,65 @@ async def storage_node(state: AgentState) -> dict:
                 economics=economics,
                 title=_generate_title(domain, intent),
             )
+            if result and isinstance(result, dict):
+                interaction_id = result.get("id")
+            persisted = bool(interaction_id)
+            logger.info(
+                "storage | interaction store result id=%s user=%s stored=%s",
+                interaction_id,
+                user_id,
+                persisted,
+            )
+            if not interaction_id:
+                # Surface a clear failure so the agent pipeline can detect it
+                # and the API can return an error to the client rather than
+                # returning an inaccurate or randomly-generated id.
+                raise RuntimeError(
+                    f"storage_node: store_interaction returned no id for user={user_id} domain={domain}"
+                )
         except Exception:
             logger.exception("storage | interaction store failed user=%s", user_id)
+            # Raise to ensure upstream pipeline and the API surface a clear error
+            # instead of silently continuing without a canonical DB id.
+            raise
     else:
         logger.warning("storage | skipped — no user_id")
 
-    return {"stored": True}
+    # 2. Domain-specific (flights → flight_bookings, shopping → purchases)
+    # Only write domain rows if explicitly allowed by the caller (opt-in).
+    domain_stored = False
+    if user_id:
+        store_flag = bool(state.get("store_domain_records", False))
+        if store_flag:
+            try:
+                # Call handler.store to persist domain records. Handlers may
+                # choose to accept an interaction_id for provenance; if not,
+                # they should still store tentative rows as the frontend prefers.
+                try:
+                    rows = handler.store(
+                        user_id, intent, domain, interaction_id=interaction_id
+                    )  # type: ignore[arg-type]
+                except TypeError:
+                    # Backwards-compatible: some handlers expect only (user_id, intent, domain)
+                    rows = handler.store(user_id, intent, domain)
+                logger.info("storage | domain rows=%d | user=%s", len(rows), user_id)
+                domain_stored = True
+            except Exception:
+                logger.exception("storage | domain store failed user=%s", user_id)
+        else:
+            logger.info(
+                "storage | domain store skipped for user=%s domain=%s (opt-in disabled)",
+                user_id,
+                domain,
+            )
+
+    # Return the stored flag(s) and, when available, the DB-generated interaction id
+    # so upstream callers (e.g. the API route) can surface the canonical server id.
+    return {
+        "stored": persisted,
+        "interaction_id": interaction_id,
+        "domain_stored": domain_stored,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -351,6 +610,7 @@ def build_agent(*, checkpointer=None):
     g.add_node("bank_fetcher", bank_fetcher_node)
     g.add_node("purchase_history_fetcher", purchase_history_fetcher_node)
     g.add_node("audit", audit_node)
+
     g.add_node("drafting", drafting_node)
     g.add_node("economics", economics_node)
     g.add_node("storage", storage_node)

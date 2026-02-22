@@ -1,3 +1,25 @@
+# Environment / secrets
 .env
+
+# Python caches & virtualenvs
 __pycache__/
 venv/
+.venv/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Editor / OS cruft
+.DS_Store
+
+# Runtime artifacts / logs / locks
+server.log
+uv.lock
+
+# Temporary / one-off scripts (dev / ops helpers)
+tmp_*.py
+tmp_*.pyc
+
+# Potentially sensitive local files (e.g. Google client secrets)
+Downloads/*.json

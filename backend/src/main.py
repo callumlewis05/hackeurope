@@ -601,6 +601,28 @@ async def intervention_stats(user: CurrentUser):
     return db.get_interaction_stats(user["id"])
 
 
+@app.get("/api/interventions/categories")
+async def intervention_categories(user: CurrentUser, lookback_days: int = 365):
+    """Return compact category counts for the authenticated user.
+
+    Response shape: a list of single-key dicts sorted by count descending,
+    e.g. [{"electronics": 5}, {"travel": 3}, ...].
+    The counts are computed from Interaction.categories within the lookback window.
+    """
+    return db.get_category_counts(user["id"], lookback_days=lookback_days)
+
+
+@app.get("/api/interventions/mistake_types")
+async def intervention_mistake_types(user: CurrentUser, lookback_days: int = 365):
+    """Return compact mistake-type counts for the authenticated user.
+
+    Response shape: a list of single-key dicts sorted by count descending,
+    e.g. [{"impulse spending": 4}, {"double booking": 2}, ...].
+    The counts are computed from Interaction.mistake_types within the lookback window.
+    """
+    return db.get_mistake_type_counts(user["id"], lookback_days=lookback_days)
+
+
 @app.get("/api/interventions/{intervention_id}", response_model=InterventionOut)
 async def get_intervention(intervention_id: _uuid.UUID, user: CurrentUser):
     """Return a single intervention record by ID."""

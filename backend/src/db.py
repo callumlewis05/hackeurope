@@ -836,6 +836,76 @@ def get_interaction_stats(user_id: _uuid.UUID) -> dict[str, Any]:
         }
 
 
+def get_category_counts(
+    user_id: _uuid.UUID, lookback_days: int = 365
+) -> list[dict[str, int]]:
+    """Return aggregated counts of categories across a user's interactions.
+
+    Returns a list of single-key dicts like:
+      [{"electronics": 5}, {"travel": 3}, ...]
+    sorted by count descending. Operates on interactions within the lookback window.
+    """
+    uid = _to_uuid(user_id)
+    since = datetime.utcnow() - timedelta(days=lookback_days) if lookback_days else None
+
+    try:
+        with get_session() as session:
+            base = select(Interaction).where(Interaction.user_id == uid)
+            if since:
+                base = base.where(Interaction.analyzed_at >= since)
+
+            rows = session.exec(base).all()
+
+            counts: dict[str, int] = {}
+            for r in rows:
+                for c in r.categories or []:
+                    if not c:
+                        continue
+                    counts[c] = counts.get(c, 0) + 1
+
+            # Convert to list of single-key dicts sorted by count desc to match the
+            # compact shape requested by the frontend.
+            sorted_items = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            return [{k: v} for k, v in sorted_items]
+    except Exception:
+        logger.exception("get_category_counts failed user=%s", user_id)
+        return []
+
+
+def get_mistake_type_counts(
+    user_id: _uuid.UUID, lookback_days: int = 365
+) -> list[dict[str, int]]:
+    """Return aggregated counts of mistake types across a user's interactions.
+
+    Returns a list of single-key dicts like:
+      [{"impulse spending": 4}, {"double booking": 2}, ...]
+    sorted by count descending. Operates on interactions within the lookback window.
+    """
+    uid = _to_uuid(user_id)
+    since = datetime.utcnow() - timedelta(days=lookback_days) if lookback_days else None
+
+    try:
+        with get_session() as session:
+            base = select(Interaction).where(Interaction.user_id == uid)
+            if since:
+                base = base.where(Interaction.analyzed_at >= since)
+
+            rows = session.exec(base).all()
+
+            counts: dict[str, int] = {}
+            for r in rows:
+                for m in r.mistake_types or []:
+                    if not m:
+                        continue
+                    counts[m] = counts.get(m, 0) + 1
+
+            sorted_items = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+            return [{k: v} for k, v in sorted_items]
+    except Exception:
+        logger.exception("get_mistake_type_counts failed user=%s", user_id)
+        return []
+
+
 # ═════════════════════════════════════════════
 # Profile Repository
 # ═════════════════════════════════════════════

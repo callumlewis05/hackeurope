@@ -14,14 +14,14 @@ import uuid as _uuid
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from email.utils import parsedate_to_datetime
-from typing import Any, Generator, Optional
+from typing import Any, Generator, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
 from sqlalchemy import Column, ForeignKey, Index, Text, func, text  # noqa: F401
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlmodel import Field, Session, SQLModel, create_engine, or_, select
+from sqlmodel import Field, Relationship, Session, SQLModel, create_engine, or_, select
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -43,7 +43,6 @@ def _clean_database_url(url: str) -> str:
     """Strip query params that psycopg2 doesn't understand (e.g. pgbouncer)."""
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
-    # Remove keys that aren't valid libpq connection options
     for bad_key in ("pgbouncer",):
         params.pop(bad_key, None)
     cleaned_query = urlencode(params, doseq=True)
@@ -74,11 +73,11 @@ def get_session() -> Generator[Session, None, None]:
 def purge_all_data() -> None:
     """Drop ALL tables managed by SQLModel and recreate them empty.
 
-    ⚠️  This is destructive — every row in every table will be lost.
+    This is destructive — every row in every table will be lost.
     """
-    logger.warning("PURGING ALL DATA — dropping all tables…")
+    logger.warning("PURGING ALL DATA — dropping all tables...")
     SQLModel.metadata.drop_all(_engine)
-    logger.info("All tables dropped. Recreating schema…")
+    logger.info("All tables dropped. Recreating schema...")
     SQLModel.metadata.create_all(_engine)
     logger.info("Schema recreated. All tables are now empty.")
 
@@ -94,7 +93,6 @@ class Profile(SQLModel, table=True):
 
     id: _uuid.UUID = Field(default_factory=_uuid.uuid4, primary_key=True)
     email: str = Field(sa_column=Column(Text, nullable=False))
-
     name: Optional[str] = None
     avatar_url: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -232,7 +230,21 @@ class Interaction(SQLModel, table=True):
     money_saved: Optional[float] = None
     platform_fee: Optional[float] = None
     hour_of_day: Optional[int] = None
+    llm_usage: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
     analyzed_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Simplified categorization: storing strings directly as JSONB lists
+    categories: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    )
+    mistake_types: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    )
 
 
 # ═════════════════════════════════════════════
@@ -265,20 +277,16 @@ def _parse_date(val: str | None) -> date | None:
         return None
     s = val.strip()
 
-    # ISO format (2026-03-14)
     try:
         return date.fromisoformat(s)
     except ValueError:
         pass
 
-    # RFC 2822 style ("Sat, 14 Mar 2026") — parsedate_to_datetime needs a time,
-    # so append one if missing
     try:
         return parsedate_to_datetime(s + " 00:00:00").date()
     except Exception:
         pass
 
-    # Common formats
     for fmt in (
         "%d %b %Y",
         "%d %B %Y",
@@ -292,7 +300,6 @@ def _parse_date(val: str | None) -> date | None:
         except ValueError:
             continue
 
-    # Last resort: strip leading day name ("Sat, " / "Saturday, ") and retry
     if "," in s:
         after_comma = s.split(",", 1)[1].strip()
         return _parse_date(after_comma)
@@ -319,7 +326,7 @@ def _parse_time(val: str | None) -> time | None:
 def get_flights_near_dates(
     user_id: str | _uuid.UUID, dates: list[date], window_days: int = 3
 ) -> list[dict[str, Any]]:
-    """Return bookings for user within ±window_days of any given date."""
+    """Return bookings for user within window_days of any given date."""
     if not dates:
         return []
 
@@ -490,7 +497,6 @@ def find_similar_items(
     if not keywords and not category:
         return []
 
-    # Build OR conditions: any keyword ILIKE match, or same category
     conditions = []
     for kw in keywords[:5]:
         safe = kw.replace("%", "").replace("_", "")
@@ -621,6 +627,8 @@ def store_interaction(
     economics: dict[str, Any],
     title: str | None = None,
     feedback: bool = True,
+    categories: list[str] | None = None,
+    mistake_types: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Log one analysis run into the interactions table."""
     uid = _to_uuid(user_id)
@@ -640,6 +648,10 @@ def store_interaction(
                 money_saved=economics.get("money_saved"),
                 platform_fee=economics.get("platform_fee"),
                 hour_of_day=economics.get("hour_of_day"),
+                # Persist the LLM usage blob (if present). This is optional and may be None.
+                llm_usage=economics.get("llm_usage"),
+                categories=categories or [],
+                mistake_types=mistake_types or [],
             )
             session.add(row)
             session.flush()
@@ -664,6 +676,8 @@ def _interaction_to_dict(row: Interaction) -> dict[str, Any]:
         "domain": row.domain,
         "title": row.title,
         "intent_type": row.intent_type,
+        "categories": row.categories or [],
+        "mistake_types": row.mistake_types or [],
         "intent_data": row.intent_data or {},
         "risk_factors": row.risk_factors or [],
         "intervention_message": row.intervention_message,
@@ -673,6 +687,9 @@ def _interaction_to_dict(row: Interaction) -> dict[str, Any]:
         "money_saved": row.money_saved,
         "platform_fee": row.platform_fee,
         "hour_of_day": row.hour_of_day,
+        "llm_usage": row.llm_usage
+        if getattr(row, "llm_usage", None) is not None
+        else None,
         "analyzed_at": str(row.analyzed_at) if row.analyzed_at else None,
     }
 
@@ -699,11 +716,9 @@ def list_interactions(
             if intervened_only:
                 base = base.where(Interaction.was_intervened == True)  # noqa: E712
 
-            # Total count (before pagination)
             count_stmt = select(func.count()).select_from(base.subquery())
             total: int = session.exec(count_stmt).one()
 
-            # Paginated results
             rows = session.exec(
                 base.order_by(Interaction.analyzed_at.desc())  # type: ignore[union-attr]
                 .offset(offset)
@@ -736,14 +751,10 @@ def get_interaction(
 def update_interaction_feedback(
     user_id: str | _uuid.UUID, interaction_id: str | _uuid.UUID, feedback: bool
 ) -> bool:
-    """Update the feedback boolean for a single interaction, scoped to the user.
-
-    Returns True on success, False if the interaction was not found or an error occurred.
-    """
+    """Update the feedback boolean for a single interaction, scoped to the user."""
     uid = _to_uuid(user_id)
     try:
         with get_session() as session:
-            # Ensure we use a UUID instance for lookup
             iid = _to_uuid(interaction_id)
             row = session.get(Interaction, iid)
             if not row or row.user_id != uid:
@@ -754,7 +765,6 @@ def update_interaction_feedback(
                 )
                 return False
 
-            # Update the feedback flag and persist
             row.feedback = bool(feedback)
             session.add(row)
             session.flush()
@@ -788,7 +798,6 @@ def get_interaction_stats(user_id: _uuid.UUID) -> dict[str, Any]:
             total_compute_cost = sum(r.compute_cost or 0.0 for r in rows)
             total_platform_fees = sum(r.platform_fee or 0.0 for r in rows)
 
-            # Per-domain breakdown
             domain_map: dict[str, dict[str, Any]] = {}
             for r in rows:
                 d = domain_map.setdefault(
@@ -838,48 +847,31 @@ def upsert_user(
     name: str | None = None,
     avatar_url: str | None = None,
 ) -> dict[str, Any]:
-    """Create or update a profile so ``profiles.id == auth.users.id``.
-
-    Handles three cases:
-    1. **Profile exists with matching id** → update name/avatar.
-    2. **No profile with this id, but one exists with the same email**
-       (UUID mismatch from earlier bugs) → re-ID the existing row to
-       use the canonical auth UUID, updating FKs in child tables inside
-       the same transaction.
-    3. **No profile at all** → insert a new row keyed by the auth UUID.
-
-    Raises on DB errors so callers can decide how to handle failures
-    (instead of silently swallowing them).
-    """
+    """Create or update a profile so profiles.id == auth.users.id."""
     with get_session() as session:
-        # ── Case 1: profile already keyed by the auth UUID ───────
         profile = session.get(Profile, user_id)
         if profile:
             if name is not None:
                 profile.name = name
             if avatar_url is not None:
                 profile.avatar_url = avatar_url
-            # Keep email in sync with auth (it may have changed)
             if email:
                 profile.email = email
             session.add(profile)
             session.flush()
             return _profile_to_dict(profile)
 
-        # ── Case 2: email collision — profile exists under a stale UUID
         stmt = select(Profile).where(Profile.email == email)
         existing = session.exec(stmt).first()
 
         if existing:
             old_id = existing.id
             logger.warning(
-                "upsert_user: re-IDing profile %s → %s (email=%s)",
+                "upsert_user: re-IDing profile %s -> %s (email=%s)",
                 old_id,
                 user_id,
                 email,
             )
-            # Migrate child-table FKs from old_id → user_id.
-            # Done via raw UPDATE so we don't have to load every row.
             _child_tables = [
                 "email_connections",
                 "user_calendars",
@@ -893,8 +885,6 @@ def upsert_user(
                         f"UPDATE {tbl} SET user_id = :new WHERE user_id = :old"
                     ).bindparams(new=user_id, old=old_id)
                 )
-
-            # Now update the profile row itself
             session.execute(
                 text(
                     "UPDATE profiles SET id = :new_id, email = :email, "
@@ -911,14 +901,11 @@ def upsert_user(
             )
             session.flush()
 
-            # Re-fetch to return consistent data
             profile = session.get(Profile, user_id)
             if profile:
                 return _profile_to_dict(profile)
-            # Shouldn't happen, but guard against it
             logger.error("upsert_user: profile disappeared after re-ID %s", user_id)
 
-        # ── Case 3: brand-new user ──────────────────────────────
         profile = Profile(id=user_id, email=email, name=name, avatar_url=avatar_url)
         session.add(profile)
         session.flush()
@@ -1026,16 +1013,12 @@ def upsert_email_connection(
     provider: str = "google",
     token_expires_at: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Create or update the Gmail/email connection for a user.
-
-    Only one connection per user is supported (unique on user_id).
-    """
+    """Create or update the Gmail/email connection for a user."""
     uid = _to_uuid(user_id)
     try:
         with get_session() as session:
             stmt = select(EmailConnection).where(EmailConnection.user_id == uid)
             existing = session.exec(stmt).first()
-
             if existing:
                 existing.access_token = access_token
                 if refresh_token is not None:
@@ -1081,7 +1064,7 @@ def get_email_connection(user_id: _uuid.UUID) -> dict[str, Any] | None:
 
 
 def get_email_connection_raw(user_id: _uuid.UUID) -> dict[str, Any] | None:
-    """Return the email connection INCLUDING tokens (for internal use only)."""
+    """Return the email connection INCLUDING tokens — for internal use only."""
     uid = _to_uuid(user_id)
     try:
         with get_session() as session:
@@ -1124,7 +1107,7 @@ def update_email_token(
     access_token: str,
     token_expires_at: datetime | None = None,
 ) -> bool:
-    """Update just the access token (after a refresh). Returns True on success."""
+    """Update just the access token after a refresh. Returns True on success."""
     uid = _to_uuid(user_id)
     try:
         with get_session() as session:

@@ -1,7 +1,7 @@
 """Request/response schemas and LangGraph agent state."""
 
 import operator
-from typing import Annotated, Any, Optional, TypedDict
+from typing import Annotated, Any, NotRequired, Optional, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -133,6 +133,8 @@ class InterventionOut(BaseModel):
     domain: str
     title: Optional[str] = None
     intent_type: Optional[str] = None
+    categories: list[str] = Field(default_factory=list)
+    mistake_types: list[str] = Field(default_factory=list)
     intent_data: dict[str, Any] = Field(default_factory=dict)
     risk_factors: list[str] = Field(default_factory=list)
     intervention_message: Optional[str] = None
@@ -232,6 +234,8 @@ class AgentState(TypedDict):
 
     # Audit results
     risk_factors: list[str]
+    categories: list[str]
+    mistake_types: list[str]
     intervention_message: Optional[str]
 
     # Economics
@@ -239,6 +243,14 @@ class AgentState(TypedDict):
     money_saved: float
     platform_fee: float
     hour_of_day: int
+
+    # Best-effort LLM usage metadata produced by drafting_node (optional).
+    # This is used by economics/storage to compute costs and persist usage for auditing.
+    llm_usage: NotRequired[Optional[dict[str, Any]]]
+
+    # Canonical DB-generated interaction id (UUID string) set by storage_node.
+    # Present when the interaction has been persisted so callers can reference it.
+    interaction_id: NotRequired[Optional[str]]
 
     # Set by storage node
     stored: bool

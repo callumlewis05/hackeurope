@@ -417,8 +417,22 @@ async def audit_node(state: AgentState) -> dict:
     meta_header = "Context metadata: " + json.dumps(context_meta) + "\n\n"
     prompt = meta_header + base_prompt
 
-    response = await llm.ainvoke(prompt)
-    text = _extract_text(response.content)
+    # Guard: llm may be None in some environments (unconfigured). If it's not
+    # available surface an empty risk list so the pipeline can continue safely.
+    if llm is None:
+        logger.error(
+            "audit | no LLM configured; skipping audit for domain=%s", state["domain"]
+        )
+        return {"risk_factors": []}
+
+    try:
+        response = await llm.ainvoke(prompt)
+        text = _extract_text(response.content)
+    except Exception:
+        logger.exception("audit | LLM invocation failed for domain=%s", state["domain"])
+        # On LLM failure treat as no risks so we don't accidentally block the user flow.
+        return {"risk_factors": []}
+
     data = _parse_json_response(text)
     risks: list[str] = data.get("risks", [])
 
@@ -426,13 +440,114 @@ async def audit_node(state: AgentState) -> dict:
     return {"risk_factors": risks}
 
 
+async def classification_node(state: AgentState) -> dict:
+    """Classify the interaction into categories and mistake types."""
+    risks = state.get("risk_factors", [])
+    if not risks:
+        return {"categories": [], "mistake_types": []}
+
+    prompt = f"""You are an AI classifier for a neurodivergent support agent.
+
+Interaction Context:
+Domain: {state.get("domain")}
+Intent: {state.get("intent")}
+
+Identified Risks:
+{risks}
+
+Task:
+1. Classify the interaction into one or more of these CATEGORIES:
+   [electronics, travel, groceries, clothing, other]
+
+2. Classify the risks into one or more of these MISTAKE TYPES:
+   [double booking, impulse spending, date mixup, conflicting event, other]
+
+Output JSON ONLY:
+{{
+  "categories": ["string"],
+  "mistake_types": ["string"]
+}}
+"""
+
+    if llm is None:
+        return {"categories": ["other"], "mistake_types": ["other"]}
+
+    try:
+        response = await llm.ainvoke(prompt)
+        text = _extract_text(response.content)
+        data = _parse_json_response(text)
+        return {
+            "categories": data.get("categories", []),
+            "mistake_types": data.get("mistake_types", []),
+        }
+    except Exception:
+        logger.exception("classification | failed")
+        return {"categories": ["other"], "mistake_types": ["other"]}
+
+
 # ─────────────────────────────────────────────
 # 4. DRAFTING NODE
 # ─────────────────────────────────────────────
 
 
+async def classification_node(state: AgentState) -> dict:
+    """Classify the interaction into categories and mistake types."""
+    risks = state.get("risk_factors", [])
+    if not risks:
+        return {"categories": [], "mistake_types": []}
+
+    prompt = f"""You are an AI classifier for a neurodivergent support agent.
+
+Interaction Context:
+Domain: {state.get("domain")}
+Intent: {state.get("intent")}
+
+Identified Risks:
+{risks}
+
+Task:
+1. Classify the interaction into one or more of these CATEGORIES:
+   [electronics, travel, groceries, clothing, other]
+
+2. Classify the risks into one or more of these MISTAKE TYPES:
+   [double booking, impulse spending, date mixup, conflicting event, other]
+
+Output JSON ONLY:
+{{
+  "categories": ["string"],
+  "mistake_types": ["string"]
+}}
+"""
+
+    if llm is None:
+        return {"categories": ["other"], "mistake_types": ["other"]}
+
+    try:
+        response = await llm.ainvoke(prompt)
+        text = _extract_text(response.content)
+        data = _parse_json_response(text)
+        return {
+            "categories": data.get("categories", []),
+            "mistake_types": data.get("mistake_types", []),
+        }
+    except Exception:
+        logger.exception("classification | failed")
+        return {"categories": ["other"], "mistake_types": ["other"]}
+
+
 async def drafting_node(state: AgentState) -> dict:
-    """Draft an empathetic intervention message (skipped if no risks)."""
+    """Draft an empathetic intervention message (skipped if no risks).
+
+    Behavior:
+    - Attempt Gemini-first (if the adapter is importable and configured).
+    - If Gemini returns an empty/failed response, fall back to the configured
+      global LLM (from src.config.llm).
+    - Collect best-effort LLM usage metadata (model, provider, response time,
+      estimated tokens) and attach it to `state['llm_usage']` so downstream
+      nodes (economics/storage) can include it in persisted economics.
+    - Use a small retry/backoff for transient Gemini failures before falling
+      back.
+    """
     risk_factors = state.get("risk_factors", [])
     if not risk_factors:
         return {"intervention_message": None}
@@ -440,10 +555,152 @@ async def drafting_node(state: AgentState) -> dict:
     handler = get_domain_handler(state["domain"])
     prompt = handler.build_drafting_prompt(risk_factors, state["intent"])
 
-    response = await llm.ainvoke(prompt)
+    # Local imports to avoid changing module-level imports and to keep this
+    # function self-contained.
+    import asyncio
+    import time
+    from types import SimpleNamespace
+
+    gemini_client = None
+    gemini_available = False
+    try:
+        # Prefer a LangChain-backed Gemini client exposed on config (gemini_llm)
+        # when available. This lets us use the LangChainAdapter instance returned
+        # by the config factory. If config.gemini_llm is not present, fall back
+        # to the legacy local Gemini HTTP client implementation.
+        from src import config
+
+        if getattr(config, "gemini_llm", None) is not None:
+            gemini_client = config.gemini_llm
+            gemini_available = True
+        else:
+            # Fallback to legacy client if present on the filesystem / env.
+            from src.gemini_client import GeminiClient
+
+            # Create with defaults; the adapter reads its config from env vars.
+            gemini_client = GeminiClient()
+            gemini_available = True
+    except Exception:
+        gemini_client = None
+        gemini_available = False
+
+    response = None
+    used_provider = None
+    start_ts = time.monotonic()
+
+    # 1) Gemini-first with retry/backoff (best-effort)
+    if gemini_available and gemini_client is not None:
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                resp = await gemini_client.ainvoke(prompt)
+                # Consider a non-empty textual content a success.
+                content = getattr(resp, "content", None)
+                if content:
+                    response = resp
+                    used_provider = "gemini"
+                    break
+                # Empty content: treat as transient and retry a couple times
+                logger.warning(
+                    "drafting | gemini returned empty content on attempt %d",
+                    attempt + 1,
+                )
+            except Exception:
+                # Log and retry with exponential backoff
+                logger.exception("drafting | gemini attempt %d failed", attempt + 1)
+            # backoff before next attempt
+            await asyncio.sleep(0.2 * (2**attempt))
+
+    # 2) Fallback to configured global LLM (config.llm) if Gemini absent/failed
+    if response is None:
+        try:
+            from src import config
+
+            fallback_llm = getattr(config, "llm", None)
+            if fallback_llm is None:
+                # No fallback available — return an empty message but ensure
+                # llm_usage is recorded so economics/storage can handle it.
+                response = SimpleNamespace(content="")
+                used_provider = "none"
+            else:
+                resp = await fallback_llm.ainvoke(prompt)
+                response = resp
+                # If we fell back but the global provider is the Gemini adapter
+                # (unlikely here), record appropriately. Otherwise mark as fallback.
+                used_provider = "fallback"
+        except Exception:
+            logger.exception("drafting | fallback LLM invocation failed")
+            response = SimpleNamespace(content="")
+            used_provider = "fallback"
+
+    elapsed_ms = (time.monotonic() - start_ts) * 1000.0
     message = _extract_text(response.content).strip()
 
-    logger.info("drafting | message_len=%d", len(message))
+    # Prefer token estimate from the LLM adapter's response.meta when available,
+    # otherwise fall back to a simple whitespace-based heuristic.
+    estimated_tokens = None
+    meta = None
+    try:
+        meta = getattr(response, "meta", None) or {}
+        if isinstance(meta, dict):
+            estimated_tokens = (
+                meta.get("estimated_tokens")
+                or meta.get("estimated_total_tokens")
+                or meta.get("estimated_completion_tokens")
+                or (meta.get("provider_usage") or {}).get("total_tokens")
+            )
+        else:
+            # Some adapters expose meta as a SimpleNamespace-like object
+            estimated_tokens = getattr(meta, "estimated_tokens", None)
+    except Exception:
+        estimated_tokens = None
+
+    if not estimated_tokens:
+        # Fallback: conservative heuristic based on message length/words.
+        estimated_tokens = max(1, int(len(message.split())))
+
+    # Best-effort model detection: prefer meta.model, then adapter/client attributes,
+    # then response attributes and finally the configured fallback.
+    model_name = "unknown"
+    try:
+        if isinstance(meta, dict) and meta.get("model"):
+            model_name = meta.get("model")
+        elif used_provider == "gemini" and gemini_client is not None:
+            model_name = getattr(gemini_client, "model", model_name)
+        else:
+            # Try fallback llm from config if present
+            from src import config
+
+            fallback_llm = getattr(config, "llm", None)
+            model_name = getattr(
+                fallback_llm, "model", getattr(response, "model", model_name)
+            )
+    except Exception:
+        # Swallow model discovery errors — we don't want failures here to bubble up.
+        logger.debug("drafting | model discovery failed", exc_info=True)
+
+    llm_usage = {
+        "provider": used_provider,
+        "model": model_name,
+        "response_time_ms": round(elapsed_ms, 2),
+        "estimated_tokens": int(estimated_tokens),
+    }
+    # Attach raw meta if present for auditing and deeper inspection.
+    if meta:
+        llm_usage["meta"] = meta
+
+    # Attach llm usage to the shared state for downstream nodes (economics/storage)
+    state["llm_usage"] = llm_usage
+
+    logger.info(
+        "drafting | message_len=%d | provider=%s | model=%s | tokens=%d | rt_ms=%.1f",
+        len(message),
+        llm_usage.get("provider"),
+        llm_usage.get("model"),
+        llm_usage.get("estimated_tokens"),
+        llm_usage.get("response_time_ms"),
+    )
+
     return {"intervention_message": message}
 
 
@@ -453,19 +710,31 @@ async def drafting_node(state: AgentState) -> dict:
 
 
 def economics_node(state: AgentState) -> dict:
-    """Calculate compute cost, money saved, and platform fee."""
+    """Calculate compute cost, money saved, and platform fee.
+
+    This node now prefers actual LLM token usage metadata when available:
+    - If `state['llm_usage']['estimated_tokens']` is present we use that to
+      compute a more accurate `compute_cost`.
+    - We also attach the full `llm_usage` dict to the returned economics so it
+      is persisted with the interaction audit record.
+    """
     handler = get_domain_handler(state["domain"])
 
-    compute_cost = (ESTIMATED_TOKENS_PER_RUN / 1_000_000) * COST_PER_MILLION_TOKENS
+    # Prefer measured/estimated tokens from the LLM usage metadata when present.
+    llm_usage = state.get("llm_usage") or {}
+    tokens_used = llm_usage.get("estimated_tokens", ESTIMATED_TOKENS_PER_RUN)
+
+    compute_cost = (tokens_used / 1_000_000) * COST_PER_MILLION_TOKENS
     is_intervening = bool(state.get("intervention_message"))
     item_price = handler.extract_item_price(state["intent"])
     hour = handler.extract_hour_of_day(state["intent"])
 
     logger.info(
-        "economics | intervening=%s | price=%.2f | hour=%d",
+        "economics | intervening=%s | price=%.2f | hour=%d | tokens=%s",
         is_intervening,
         item_price,
         hour,
+        tokens_used,
     )
 
     platform_fee = round(compute_cost * PLATFORM_FEE_MULTIPLIER, 6)
@@ -475,6 +744,7 @@ def economics_node(state: AgentState) -> dict:
         "money_saved": item_price if is_intervening else 0.0,
         "platform_fee": platform_fee if is_intervening else 0.0,
         "hour_of_day": hour,
+        "llm_usage": llm_usage,
     }
 
 
@@ -520,6 +790,8 @@ async def storage_node(state: AgentState) -> dict:
                 domain=domain,
                 intent=intent,
                 risk_factors=state.get("risk_factors", []),
+                categories=state.get("categories"),
+                mistake_types=state.get("mistake_types"),
                 intervention_message=state.get("intervention_message"),
                 economics=economics,
                 title=_generate_title(domain, intent),
@@ -559,9 +831,10 @@ async def storage_node(state: AgentState) -> dict:
                 # choose to accept an interaction_id for provenance; if not,
                 # they should still store tentative rows as the frontend prefers.
                 try:
-                    rows = handler.store(
-                        user_id, intent, domain, interaction_id=interaction_id
-                    )  # type: ignore[arg-type]
+                    # Prefer positional interaction_id for handlers that accept it.
+                    # Some handler.store implementations expect (user_id, intent, domain, interaction_id)
+                    # while older ones accept only (user_id, intent, domain).
+                    rows = handler.store(user_id, intent, domain, interaction_id)  # type: ignore[arg-type]
                 except TypeError:
                     # Backwards-compatible: some handlers expect only (user_id, intent, domain)
                     rows = handler.store(user_id, intent, domain)
@@ -591,7 +864,7 @@ async def storage_node(state: AgentState) -> dict:
 
 
 def _route_after_audit(state: AgentState) -> str:
-    return "drafting" if state.get("risk_factors") else "economics"
+    return "classification" if state.get("risk_factors") else "economics"
 
 
 def build_agent(*, checkpointer=None):
@@ -602,7 +875,13 @@ def build_agent(*, checkpointer=None):
     if checkpointer is None:
         checkpointer = InMemorySaver()
 
-    g = StateGraph(AgentState)
+    # Ensure initial state includes empty lists for categories and mistake_types
+    def initial_state(state):
+        state.setdefault("categories", [])
+        state.setdefault("mistake_types", [])
+        return state
+
+    g = StateGraph(AgentState, initial_state=initial_state)
 
     # Register nodes
     g.add_node("context_router", context_router_node)
@@ -611,6 +890,7 @@ def build_agent(*, checkpointer=None):
     g.add_node("purchase_history_fetcher", purchase_history_fetcher_node)
     g.add_node("audit", audit_node)
 
+    g.add_node("classification", classification_node)
     g.add_node("drafting", drafting_node)
     g.add_node("economics", economics_node)
     g.add_node("storage", storage_node)
@@ -628,14 +908,15 @@ def build_agent(*, checkpointer=None):
     g.add_edge("bank_fetcher", "audit")
     g.add_edge("purchase_history_fetcher", "audit")
 
-    # Conditional: audit → drafting (if risks) or economics (if safe)
+    # Conditional: audit → classification (if risks) or economics (if safe)
     g.add_conditional_edges(
         "audit",
         _route_after_audit,
-        {"drafting": "drafting", "economics": "economics"},
+        {"classification": "classification", "economics": "economics"},
     )
 
     # Linear tail
+    g.add_edge("classification", "drafting")
     g.add_edge("drafting", "economics")
     g.add_edge("economics", "storage")
     g.add_edge("storage", END)

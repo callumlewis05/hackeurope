@@ -99,6 +99,17 @@ app.add_middleware(
 # Build the agent graph once (in-memory checkpointer shared across requests)
 _agent = build_agent()
 
+
+# /internal/tracer-test removed — diagnostic tracing endpoints were removed
+# to eliminate optional LangSmith instrumentation. Previously this endpoint
+# attempted to exercise external tracing; the functionality was removed and
+# tracing-related code deleted for simplicity.
+
+
+# /internal/routes removed — route-introspection endpoint deleted to remove
+# LangSmith and diagnostic-only endpoints from the public app surface.
+
+
 # ─────────────────────────────────────────────
 # Auth helpers
 # ─────────────────────────────────────────────
